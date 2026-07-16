@@ -21,16 +21,18 @@ extern "C" {
 
 /* ---- versions ------------------------------------------------------------ */
 #define ROTH_SDK_MAJOR 0
-#define ROTH_SDK_MINOR 5
+#define ROTH_SDK_MINOR 6
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 5
+#define ROTH_ABI_MINOR 6
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
-/* The engine surface is i386 cdecl (the default); ROTH_CDECL is a no-op there and
-   a placeholder for a future Windows/stdcall split. */
+/* The engine surface is i386 cdecl (the default); ROTH_CDECL pins that explicitly
+   on every toolchain that can express it (GCC/Clang attribute, MSVC __cdecl). */
 #if defined(__i386__) && (defined(__GNUC__) || defined(__clang__))
 #  define ROTH_CDECL __attribute__((__cdecl__))
+#elif defined(_M_IX86)
+#  define ROTH_CDECL __cdecl
 #else
 #  define ROTH_CDECL
 #endif
@@ -57,7 +59,55 @@ typedef enum roth_context {
     ROTH_CTX_GAME = 1,  /* game thread: per-frame logic; engine calls are legal here */
     ROTH_CTX_TICK_ISR = 2,  /* timer-tick / compositor context: restricted API view, no engine calls */
     ROTH_CTX_AUDIO = 3,  /* audio callback context: restricted API view */
+    ROTH_CTX_PRESENT = 4,  /* host present thread: runs once per host present-loop iteration (not per game tick or necessarily per physical refresh). No engine calls, game_ram writes, blocking, or frame submission; intended for pacing and coordination only */
 } roth_context;
+
+/* ---- frozen ABI layout region --------------------------------------------- */
+/* Every public struct below is plain i386 layout (all members are 2- or 4-byte scalars
+   or 4-byte pointers). pack(4) pins that layout explicitly on every compiler — a no-op
+   for the historical structs (verified by the generated abi_asserts.c compile gate). */
+#pragma pack(push, 4)
+
+/* ---- result codes ---------------------------------------------------------- */
+/* Result codes returned as int32_t by host services added with ABI 0.6. */
+typedef enum roth_result {
+    ROTH_OK = 0,  /* operation accepted or completed */
+    ROTH_ERR_INVALID = 1,  /* a pointer, descriptor, flag, or enum value is invalid */
+    ROTH_ERR_NOMEM = 2,  /* the host could not allocate required storage */
+    ROTH_ERR_NOT_OWNER = 3,  /* the caller does not own the requested shared service */
+    ROTH_ERR_UNSUPPORTED = 4,  /* the requested format or mode is not supported */
+    ROTH_ERR_RANGE = 5,  /* a numeric value or index is outside the supported range */
+} roth_result;
+
+/* World-frame pixel formats. ARGB8888 is an array of 32-bit words with numeric value 0xAARRGGBB; little-endian memory therefore stores bytes B, G, R, A. */
+enum {
+    ROTH_PIXFMT_ARGB8888 = 1,  /* 32-bit 0xAARRGGBB words in little-endian memory */
+};
+
+/* World-frame compositing modes inside the submitted viewport. */
+enum {
+    ROTH_COMPOSITE_ENGINE_COLORKEY_OVER_WORLD = 0,  /* draw engine 8bpp over the world; transparent_index reveals the world */
+    ROTH_COMPOSITE_WORLD_ONLY = 1,  /* draw only the submitted world frame inside the viewport */
+};
+
+/* State-notification flags. */
+enum {
+    ROTH_EVENT_INITIAL = 1,  /* synthetic first event delivered to a plugin after it loads */
+};
+
+/* Host window modes. */
+enum {
+    ROTH_WINMODE_WINDOWED = 0,  /* resizable window */
+    ROTH_WINMODE_BORDERLESS_FULLSCREEN = 1,  /* desktop-sized borderless fullscreen */
+    ROTH_WINMODE_EXCLUSIVE_FULLSCREEN = 2,  /* reserved; returns ROTH_ERR_UNSUPPORTED in ABI 0.6 */
+};
+
+/* Host present modes. */
+enum {
+    ROTH_PRESENT_FIFO = 0,  /* synchronized FIFO presentation */
+    ROTH_PRESENT_IMMEDIATE = 1,  /* unsynchronized presentation */
+    ROTH_PRESENT_ADAPTIVE = 2,  /* adaptive synchronization; unsupported when the SDL renderer cannot provide it */
+};
 
 /* ---- permanent function IDs (id == canonical 1996 VA) --------------------- */
 /* Every OVERRIDABLE (eligible) engine function, so ROTH_FN_<fn> names any override target for
@@ -1244,6 +1294,92 @@ struct roth_game_ram_api_v1 {
     void *(ROTH_CDECL *to_ptr)(uint32_t);  /* resolve a canonical VA (game_ram offset) to its host pointer (base+off); NULL if out of range. The VA->host-pointer op: use it to form a game_ram pointer to pass to an exposed engine fn, or to match a stored runtime code/data pointer (which the engine writes as VA+base). Do NOT deref beyond the named global's extent; never cache across an engine call/tick. */
 };
 
+/* ---- plain ABI structs (descriptors, events, state records) --------------- */
+/* roth_world_frame_v1: Caller-built world-frame descriptor. struct_size is sizeof this record as the caller built it; pixels are copied before submit_world_frame returns. */
+struct roth_world_frame_v1 {
+    uint32_t struct_size;  /* sizeof(struct roth_world_frame_v1) as the caller built it */
+    const uint32_t *pixels;  /* required source pixels */
+    uint32_t w;  /* source width in pixels */
+    uint32_t h;  /* source height in pixels */
+    uint32_t pitch_bytes;  /* source row pitch; zero means w * 4 */
+    uint32_t format;  /* ROTH_PIXFMT_ARGB8888 in this ABI version */
+    int32_t vx;  /* viewport X in engine 8bpp coordinates */
+    int32_t vy;  /* viewport Y in engine 8bpp coordinates */
+    uint32_t vw;  /* viewport width; zero is invalid */
+    uint32_t vh;  /* viewport height; zero is invalid */
+    uint32_t composite_mode;  /* ROTH_COMPOSITE_* value */
+    uint32_t transparent_index;  /* engine palette index revealing the world in colorkey mode; ignored otherwise */
+    uint32_t flags;  /* must be zero */
+};
+/* roth_present_caps_v1: Host present-channel limits and supported pixel formats. */
+struct roth_present_caps_v1 {
+    uint32_t struct_size;
+    uint32_t max_w;
+    uint32_t max_h;
+    uint32_t formats;  /* bitmask of ROTH_PIXFMT_* values */
+};
+/* roth_present_timing_v1: Host-built timing snapshot passed to on_present_pace. */
+struct roth_present_timing_v1 {
+    uint32_t struct_size;
+    uint32_t tick_serial;  /* count of observed engine ticks; wraps */
+    uint32_t present_serial;  /* count of host present iterations; wraps */
+    uint32_t prev_tick_ns_lo;
+    uint32_t prev_tick_ns_hi;
+    uint32_t last_tick_ns_lo;
+    uint32_t last_tick_ns_hi;
+    uint32_t now_ns_lo;
+    uint32_t now_ns_hi;
+    float alpha;  /* clamped fraction of the current inter-tick interval elapsed since the newest tick */
+};
+struct roth_map_event_v1 {
+    uint32_t struct_size;
+    uint32_t generation;
+    uint32_t flags;
+};
+struct roth_palette_event_v1 {
+    uint32_t struct_size;
+    uint32_t generation;
+    uint32_t flags;
+};
+struct roth_video_event_v1 {
+    uint32_t struct_size;
+    uint32_t generation;
+    uint32_t flags;
+    uint32_t pixel_w;
+    uint32_t pixel_h;
+    uint32_t aspect_w;
+    uint32_t aspect_h;
+};
+/* roth_window_state_v1: Applied host window state. generation advances whenever the present thread applies a request. */
+struct roth_window_state_v1 {
+    uint32_t struct_size;
+    uint32_t generation;
+    uint32_t window_mode;
+    uint32_t present_mode;
+    uint32_t min_present_interval_us;  /* minimum present interval; zero is uncapped */
+    int32_t last_request_result;  /* roth_result for the most recently applied request */
+};
+
+/* ---- host-service sub-tables (reached through trailing roth_api_v1 pointers) ---- */
+struct roth_api_v1;   /* fwd: the sub-table methods take it as their first argument */
+/* roth_present_v1: The full-colour world present channel. submit_world_frame is GAME-context only and copies the described source before returning. The first plugin whose submission returns ROTH_OK owns the channel until unload; submissions and withdrawals from other plugins return ROTH_ERR_NOT_OWNER. The owner may withdraw immediately. If an owner stops submitting without withdrawing, the host stops compositing after 16 present iterations as a crash-safety backstop. Query get_present_caps instead of assuming dimension limits. */
+struct roth_present_v1 {
+    uint32_t struct_size;  /* sizeof(struct roth_present_v1) as the host built it (feature-detect newer methods) */
+    int32_t (ROTH_CDECL *submit_world_frame)(const struct roth_api_v1 *, const struct roth_world_frame_v1 *);  /* copy and publish one caller-built frame descriptor. The viewport is required, travels with the frame, and is clipped to the current engine dimensions. Returns roth_result */
+    int32_t (ROTH_CDECL *withdraw_world_frame)(const struct roth_api_v1 *);  /* stop compositing the owner's world frame immediately; returns ROTH_ERR_NOT_OWNER for another plugin */
+    int32_t (ROTH_CDECL *get_present_caps)(const struct roth_api_v1 *, struct roth_present_caps_v1 *);  /* write the host dimension limits and supported format bitmask; returns roth_result */
+};
+/* roth_window_v1: Window and display control. GAME-context setters validate and record requests; the host present thread applies them and publishes the applied state and result. A minimum present interval is post-present sleep and composes with synchronization, so the slower limit wins. Display modes are an informational snapshot of the window's current display for settings UIs; the host republishes the list when the window changes display. No mode-set operation is provided. */
+struct roth_window_v1 {
+    uint32_t struct_size;  /* sizeof(struct roth_window_v1) as the host built it (feature-detect newer methods) */
+    int32_t (ROTH_CDECL *set_window_mode)(const struct roth_api_v1 *, uint32_t);  /* record a ROTH_WINMODE_* request. Exclusive fullscreen returns ROTH_ERR_UNSUPPORTED in this ABI version */
+    int32_t (ROTH_CDECL *set_present_mode)(const struct roth_api_v1 *, uint32_t);  /* record a ROTH_PRESENT_* request; adaptive mode may be rejected when applied */
+    int32_t (ROTH_CDECL *set_min_present_interval_us)(const struct roth_api_v1 *, uint32_t);  /* record the minimum host present interval in microseconds; zero is uncapped. To convert an fps setting, use 1000000 / fps */
+    int32_t (ROTH_CDECL *get_window_state)(const struct roth_api_v1 *, struct roth_window_state_v1 *);  /* copy the last applied window state; returns roth_result */
+    int32_t (ROTH_CDECL *get_display_mode_count)(const struct roth_api_v1 *);  /* number of modes in the informational current-display snapshot */
+    int32_t (ROTH_CDECL *get_display_mode)(const struct roth_api_v1 *, int32_t, uint32_t *, uint32_t *, uint32_t *);  /* read one snapshot entry; refresh is millihertz and output pointers may be NULL. Returns ROTH_ERR_RANGE for an invalid index */
+};
+
 /* ---- the host-provided API table (abi header first) ---------------------- */
 struct roth_api_v1 {
     uint16_t abi_major;
@@ -1252,6 +1388,8 @@ struct roth_api_v1 {
     const struct roth_engine_api_v1  *engine;
     const struct roth_game_ram_api_v1 *game_ram;
     const char *(ROTH_CDECL *plugin_dir)(void);  /* directory of the currently-dispatching plugin (valid during MAIN lifecycle callbacks; "" otherwise) */
+    const struct roth_present_v1 *present;  /* full-colour world-frame present channel (NULL on a host that predates it) */
+    const struct roth_window_v1 *window;  /* window and display control, host-owned (NULL on a host that predates it) */
 };
 
 /* ---- context-tagged lifecycle callbacks ---------------------------------- */
@@ -1273,6 +1411,10 @@ typedef void (ROTH_CDECL *roth_on_unload_main_fn)(const struct roth_api_v1 *api)
 typedef void (ROTH_CDECL *roth_on_register_overrides_main_fn)(const struct roth_api_v1 *api, struct roth_registrar_v1 *reg);  /* ROTH_CTX_MAIN: register function overrides: call roth_override(reg, ROTH_FN_<fn>, my_cb, priority) for each. Runs on MAIN after on_load, before any engine/timer/audio thread — the host builds the immutable priority chains and patches entries from these registrations */
 typedef uint8_t (ROTH_CDECL *roth_on_scancode_tick_isr_fn)(const struct roth_api_v1 *api, uint8_t sc);  /* ROTH_CTX_TICK_ISR: input seam: every keystroke before the engine sees it, in TICK_ISR context (keyboard-ISR surrogate: NO engine calls). Return the (possibly rewritten) set-1 scancode, or 0 to SWALLOW the key (no state change, like a dropped prefix). Chained across plugins in load order; a 0 return stops the chain. */
 typedef void (ROTH_CDECL *roth_on_mouse_poll_game_fn)(const struct roth_api_v1 *api, struct roth_mouse_poll_v1 *mp);  /* ROTH_CTX_GAME: int33 mouse seam: fires on the GAME thread after each mouse poll (engine calls legal), with the SDK-neutral roth_mouse_poll_v1 result. Read mp->ax + the poll registers; modify ebx/ecx/edx to filter what the game sees (overlay input capture). Chained across plugins in load order. */
+typedef void (ROTH_CDECL *roth_on_map_loaded_game_fn)(const struct roth_api_v1 *api, const struct roth_map_event_v1 *event);  /* ROTH_CTX_GAME: a new level's geometry, textures, and per-map colour tables are staged and ready to read. The first map event a plugin sees carries ROTH_EVENT_INITIAL. */
+typedef void (ROTH_CDECL *roth_on_palette_changed_game_fn)(const struct roth_api_v1 *api, const struct roth_palette_event_v1 *event);  /* ROTH_CTX_GAME: the VGA DAC palette changed. The synthetic first event carries ROTH_EVENT_INITIAL. Screen fades can produce a burst of events; heavy consumers may debounce. */
+typedef void (ROTH_CDECL *roth_on_video_mode_changed_fn)(const struct roth_api_v1 *api, const struct roth_video_event_v1 *event);  /* ROTH_CTX_GAME: the engine pixel dimensions changed. The event also carries the logical aspect dimensions used by the host present path, and the synthetic first event carries ROTH_EVENT_INITIAL. */
+typedef void (ROTH_CDECL *roth_on_present_pace_fn)(const struct roth_api_v1 *api, const struct roth_present_timing_v1 *timing);  /* ROTH_CTX_PRESENT: called exactly once per host present-loop iteration immediately before the host presents. alpha is (now - last_tick) / (last_tick - prev_tick), clamped to [0,1]; before two ticks exist it is 1. Interpolate lerp(snapshot[N-1], snapshot[N], alpha) for smooth tick-latent motion. No engine calls, game_ram writes, blocking, or frame submission. */
 
 /* ---- runtime override registration --------------------------------------- */
 typedef int (ROTH_CDECL *roth_register_override_fn)(struct roth_registrar_v1 *, uint32_t, void *, int);
@@ -1298,7 +1440,7 @@ enum roth_api_use {
 
 /* ---- the single versioned plugin export + its info struct ---------------- */
 /* A plugin ships mods/<name>/plugin.so exporting exactly ONE function:
-       ROTH_PLUGIN_EXPORT const struct roth_plugin_info_v1 *roth_plugin_query_v1(void);
+       ROTH_PLUGIN_EXPORT const struct roth_plugin_info_v1 *ROTH_CDECL roth_plugin_query_v1(void);
    returning a pointer to a static, immutable info struct. abi_major/abi_minor/
    struct_size lead it; the loader accepts the plugin iff
    abi_major == host AND abi_minor <= host. A NULL callback = not interested. */
@@ -1321,10 +1463,17 @@ struct roth_plugin_info_v1 {
     roth_on_register_overrides_main_fn on_register_overrides;
     roth_on_scancode_tick_isr_fn on_scancode;
     roth_on_mouse_poll_game_fn on_mouse_poll;
+    roth_on_map_loaded_game_fn on_map_loaded;
+    roth_on_palette_changed_game_fn on_palette_changed;
+    roth_on_video_mode_changed_fn on_video_mode_changed;
+    roth_on_present_pace_fn on_present_pace;
 };
 
-/* The plugin's one export (host resolves it by dlsym). */
-ROTH_PLUGIN_EXPORT const struct roth_plugin_info_v1 *roth_plugin_query_v1(void);
+/* The plugin's one export type and declaration (host resolves it by dlsym). */
+typedef const struct roth_plugin_info_v1 *(ROTH_CDECL *roth_plugin_query_v1_fn)(void);
+ROTH_PLUGIN_EXPORT const struct roth_plugin_info_v1 *ROTH_CDECL roth_plugin_query_v1(void);
+
+#pragma pack(pop)   /* end of the frozen ABI layout region */
 
 /* ---- convenience call macros (call an exposed engine fn through the table) - */
 #define ROTH_CALL_clear_framebuffer_rect(api, ...) ((api)->engine->clear_framebuffer_rect(__VA_ARGS__))

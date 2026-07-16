@@ -106,6 +106,36 @@ static const struct roth_engine_api_v1 ENG = {
  * standalone -c ABI proof leaves them unresolved; the standalone game link binds plugin_loader.o). */
 extern const char *roth_sdk_current_plugin_dir(void);
 
+/* roth_present_v1: host implementations provided by the game's platform layer (extern here;
+ * the standalone -c ABI proof leaves them unresolved — the game link binds the platform TU). */
+extern int32_t roth_present_submit_world_frame(const struct roth_api_v1 *, const struct roth_world_frame_v1 *);
+extern int32_t roth_present_withdraw_world_frame(const struct roth_api_v1 *);
+extern int32_t roth_present_get_present_caps(const struct roth_api_v1 *, struct roth_present_caps_v1 *);
+static const struct roth_present_v1 PRESENT = {
+    .struct_size = (uint32_t)sizeof(struct roth_present_v1),
+    .submit_world_frame = roth_present_submit_world_frame,
+    .withdraw_world_frame = roth_present_withdraw_world_frame,
+    .get_present_caps = roth_present_get_present_caps,
+};
+
+/* roth_window_v1: host implementations provided by the game's platform layer (extern here;
+ * the standalone -c ABI proof leaves them unresolved — the game link binds the platform TU). */
+extern int32_t roth_window_set_window_mode(const struct roth_api_v1 *, uint32_t);
+extern int32_t roth_window_set_present_mode(const struct roth_api_v1 *, uint32_t);
+extern int32_t roth_window_set_min_present_interval_us(const struct roth_api_v1 *, uint32_t);
+extern int32_t roth_window_get_window_state(const struct roth_api_v1 *, struct roth_window_state_v1 *);
+extern int32_t roth_window_get_display_mode_count(const struct roth_api_v1 *);
+extern int32_t roth_window_get_display_mode(const struct roth_api_v1 *, int32_t, uint32_t *, uint32_t *, uint32_t *);
+static const struct roth_window_v1 WINDOW = {
+    .struct_size = (uint32_t)sizeof(struct roth_window_v1),
+    .set_window_mode = roth_window_set_window_mode,
+    .set_present_mode = roth_window_set_present_mode,
+    .set_min_present_interval_us = roth_window_set_min_present_interval_us,
+    .get_window_state = roth_window_get_window_state,
+    .get_display_mode_count = roth_window_get_display_mode_count,
+    .get_display_mode = roth_window_get_display_mode,
+};
+
 ROTH_SDK_EXPORT const struct roth_api_v1 roth_host_api_v1 = {
     .abi_major = ROTH_ABI_MAJOR,
     .abi_minor = ROTH_ABI_MINOR,
@@ -113,4 +143,6 @@ ROTH_SDK_EXPORT const struct roth_api_v1 roth_host_api_v1 = {
     .engine = &ENG,
     .game_ram = &GR,
     .plugin_dir = roth_sdk_current_plugin_dir,
+    .present = &PRESENT,
+    .window = &WINDOW,
 };

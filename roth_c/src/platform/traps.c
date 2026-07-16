@@ -17,6 +17,8 @@
 #if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
 void plugins_dispatch_compose_tick(uint8_t *pixels, uint32_t w, uint32_t h); /* plugin_loader.c */
 uint8_t plugins_dispatch_scancode(uint8_t sc);                               /* plugin_loader.c */
+int plugins_any_loaded(void);                                                /* plugin_loader.c */
+void roth_present_note_tick(void);                                           /* present_channel.c */
 #endif
 
 #include <stdlib.h>
@@ -1653,6 +1655,22 @@ static void shm_tick(void)
                                   * Gated no-op when disarmed; runs on the pump thread (dump-safe). */
         _exit(0);
     }
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+    /* Present-pace timing: stamp the wall-clock each time the engine's frame-tick counter advances,
+     * so the present thread can compute the inter-tick fraction (roth_on_present_pace). Game-thread
+     * only, cheap, no engine calls. */
+    {
+        static uint16_t s_pace_tick;
+        static int s_pace_primed;
+        uint16_t tk = GV16(VA_g_frame_tick_counter);
+        if (!s_pace_primed) { s_pace_primed = 1; s_pace_tick = tk; }
+        else if (tk != s_pace_tick) {
+            s_pace_tick = tk;
+            if (plugins_any_loaded())
+                roth_present_note_tick();
+        }
+    }
+#endif
     /* Hold the hidden developer flag (canon 0x7f560 bit0) enabled. Set every
      * tick so it survives the CRT's one-time BSS clear at startup; the enable
      * routine the devs left at 0x14464 has no xrefs, so this is the same net

@@ -1,13 +1,13 @@
 {
  "schema": "roth-sdk/sdk_api/v1",
- "note": "HAND-CURATED source of truth for the non-engine SDK surface: version constants, the API-table struct shape, the game_ram accessor set (v1.1 design 10.6), and the context-tagged lifecycle callbacks (10.4). Kept deliberately MINIMAL for v0.1 (SDK foundation): no loader, no override chains, no fingerprints yet. This schema GROWS with the loader milestone. tools/sdk_gen.py turns it (plus functions.json) into sdk/include/roth_sdk.h and sdk/abi/descriptor.json.",
+ "note": "HAND-CURATED source of truth for the non-engine SDK surface: version constants, API-table shapes, game_ram accessors, public records, and context-tagged lifecycle callbacks. tools/sdk_gen.py turns it, together with functions.json, into sdk/include/roth_sdk.h, sdk/abi/descriptor.json, and the generated host support files.",
 
  "version": {
   "sdk_major": 0,
-  "sdk_minor": 5,
+  "sdk_minor": 6,
   "abi_major": 0,
-  "abi_minor": 5,
-  "load_rule": "A plugin loads iff abi_major == host.abi_major AND abi_minor <= host.abi_minor. Additive growth = minor bump; any breaking change = major bump. CI (tools/sdk_check.py) enforces the bump against sdk/abi/released/. THE EXPOSED-ORDER LAW (coordinator ruling 2026-07-11, fixing review finding 9 structurally): the engine-call table's slot order = EXPOSURE ORDER — the ordered STARTER_SET list in tools/sdk_extract_signatures.py IS the table order, frozen as ABI; new exposures are APPENDED at its end, so existing slot offsets never move and every exposure is a true append-only minor bump, forever. CI gate 'exposure-order' enforces prefix-stability of the table against the released baseline (a re-sort/insert/removal fails hard; no version bump excuses it). v0.5 (two-flavor ruling / doc_viewer runtime-plugin port, task #103) appends two engine slots at the tail — blit_das_image_to_buffer (0x1325b, slot 22) and draw_popup_shadow_border_smc (0x12dde, slot 23), both proven reuse points in sdk/examples/doc_viewer — growing the exposed set 22 -> 24 with the v0.4 slots byte-identical. v0.4 APPENDED (all trailing): game_ram->to_ptr, struct roth_mouse_poll_v1, the on_scancode/on_mouse_poll seam callbacks, and roth_api_v1->plugin_dir()."
+  "abi_minor": 6,
+  "load_rule": "A plugin loads iff abi_major == host.abi_major AND abi_minor <= host.abi_minor. Additive growth requires a minor bump; a breaking change requires a major bump. The engine-call table's slot order is exposure order and is frozen ABI: new exposures append at the end, existing slot offsets never move, and the exposure-order gate enforces prefix stability against the released baseline. Version 0.6 appends the PRESENT context, the roth_present_v1 and roth_window_v1 host-service sub-tables, and the on_map_loaded, on_palette_changed, on_video_mode_changed, and on_present_pace callbacks. Version 0.5 appends blit_das_image_to_buffer and draw_popup_shadow_border_smc to the engine table. Version 0.4 appends game_ram->to_ptr, struct roth_mouse_poll_v1, the on_scancode and on_mouse_poll callbacks, and roth_api_v1->plugin_dir()."
  },
 
  "contexts": {
@@ -17,7 +17,108 @@
    {"name": "ROTH_CTX_MAIN",     "value": 0, "desc": "boot / main thread: discovery, validation, patching — all before the timer/game/audio threads start"},
    {"name": "ROTH_CTX_GAME",     "value": 1, "desc": "game thread: per-frame logic; engine calls are legal here"},
    {"name": "ROTH_CTX_TICK_ISR", "value": 2, "desc": "timer-tick / compositor context: restricted API view, no engine calls"},
-   {"name": "ROTH_CTX_AUDIO",    "value": 3, "desc": "audio callback context: restricted API view"}
+   {"name": "ROTH_CTX_AUDIO",    "value": 3, "desc": "audio callback context: restricted API view"},
+   {"name": "ROTH_CTX_PRESENT",  "value": 4, "desc": "host present thread: runs once per host present-loop iteration (not per game tick or necessarily per physical refresh). No engine calls, game_ram writes, blocking, or frame submission; intended for pacing and coordination only"}
+  ]
+ },
+
+ "results": {
+  "enum_name": "roth_result",
+  "note": "Result codes returned as int32_t by host services added with ABI 0.6.",
+  "values": [
+   {"name": "ROTH_OK",              "value": 0, "desc": "operation accepted or completed"},
+   {"name": "ROTH_ERR_INVALID",     "value": 1, "desc": "a pointer, descriptor, flag, or enum value is invalid"},
+   {"name": "ROTH_ERR_NOMEM",       "value": 2, "desc": "the host could not allocate required storage"},
+   {"name": "ROTH_ERR_NOT_OWNER",   "value": 3, "desc": "the caller does not own the requested shared service"},
+   {"name": "ROTH_ERR_UNSUPPORTED", "value": 4, "desc": "the requested format or mode is not supported"},
+   {"name": "ROTH_ERR_RANGE",       "value": 5, "desc": "a numeric value or index is outside the supported range"}
+  ]
+ },
+
+ "abi_enums": [
+  {"note": "World-frame pixel formats. ARGB8888 is an array of 32-bit words with numeric value 0xAARRGGBB; little-endian memory therefore stores bytes B, G, R, A.",
+   "values": [
+    {"name": "ROTH_PIXFMT_ARGB8888", "value": 1, "desc": "32-bit 0xAARRGGBB words in little-endian memory"}
+   ]},
+  {"note": "World-frame compositing modes inside the submitted viewport.",
+   "values": [
+    {"name": "ROTH_COMPOSITE_ENGINE_COLORKEY_OVER_WORLD", "value": 0, "desc": "draw engine 8bpp over the world; transparent_index reveals the world"},
+    {"name": "ROTH_COMPOSITE_WORLD_ONLY",                  "value": 1, "desc": "draw only the submitted world frame inside the viewport"}
+   ]},
+  {"note": "State-notification flags.",
+   "values": [
+    {"name": "ROTH_EVENT_INITIAL", "value": 1, "desc": "synthetic first event delivered to a plugin after it loads"}
+   ]},
+  {"note": "Host window modes.",
+   "values": [
+    {"name": "ROTH_WINMODE_WINDOWED",                 "value": 0, "desc": "resizable window"},
+    {"name": "ROTH_WINMODE_BORDERLESS_FULLSCREEN",    "value": 1, "desc": "desktop-sized borderless fullscreen"},
+    {"name": "ROTH_WINMODE_EXCLUSIVE_FULLSCREEN",     "value": 2, "desc": "reserved; returns ROTH_ERR_UNSUPPORTED in ABI 0.6"}
+   ]},
+  {"note": "Host present modes.",
+   "values": [
+    {"name": "ROTH_PRESENT_FIFO",      "value": 0, "desc": "synchronized FIFO presentation"},
+    {"name": "ROTH_PRESENT_IMMEDIATE", "value": 1, "desc": "unsynchronized presentation"},
+    {"name": "ROTH_PRESENT_ADAPTIVE",  "value": 2, "desc": "adaptive synchronization; unsupported when the SDL renderer cannot provide it"}
+   ]}
+ ],
+
+ "abi_structs": {
+  "structs": [
+   {"struct_name": "roth_world_frame_v1", "note": "Caller-built world-frame descriptor. struct_size is sizeof this record as the caller built it; pixels are copied before submit_world_frame returns.",
+    "fields": [
+     {"name": "struct_size",       "type": "uint32_t",        "desc": "sizeof(struct roth_world_frame_v1) as the caller built it"},
+     {"name": "pixels",            "type": "const uint32_t *", "desc": "required source pixels"},
+     {"name": "w",                 "type": "uint32_t",        "desc": "source width in pixels"},
+     {"name": "h",                 "type": "uint32_t",        "desc": "source height in pixels"},
+     {"name": "pitch_bytes",       "type": "uint32_t",        "desc": "source row pitch; zero means w * 4"},
+     {"name": "format",            "type": "uint32_t",        "desc": "ROTH_PIXFMT_ARGB8888 in this ABI version"},
+     {"name": "vx",                "type": "int32_t",         "desc": "viewport X in engine 8bpp coordinates"},
+     {"name": "vy",                "type": "int32_t",         "desc": "viewport Y in engine 8bpp coordinates"},
+     {"name": "vw",                "type": "uint32_t",        "desc": "viewport width; zero is invalid"},
+     {"name": "vh",                "type": "uint32_t",        "desc": "viewport height; zero is invalid"},
+     {"name": "composite_mode",    "type": "uint32_t",        "desc": "ROTH_COMPOSITE_* value"},
+     {"name": "transparent_index", "type": "uint32_t",        "desc": "engine palette index revealing the world in colorkey mode; ignored otherwise"},
+     {"name": "flags",              "type": "uint32_t",        "desc": "must be zero"}
+    ]},
+   {"struct_name": "roth_present_caps_v1", "note": "Host present-channel limits and supported pixel formats.",
+    "fields": [
+     {"name": "struct_size", "type": "uint32_t"},
+     {"name": "max_w",       "type": "uint32_t"},
+     {"name": "max_h",       "type": "uint32_t"},
+     {"name": "formats",     "type": "uint32_t", "desc": "bitmask of ROTH_PIXFMT_* values"}
+    ]},
+   {"struct_name": "roth_present_timing_v1", "note": "Host-built timing snapshot passed to on_present_pace.",
+    "fields": [
+     {"name": "struct_size",     "type": "uint32_t"},
+     {"name": "tick_serial",     "type": "uint32_t", "desc": "count of observed engine ticks; wraps"},
+     {"name": "present_serial",  "type": "uint32_t", "desc": "count of host present iterations; wraps"},
+     {"name": "prev_tick_ns_lo", "type": "uint32_t"},
+     {"name": "prev_tick_ns_hi", "type": "uint32_t"},
+     {"name": "last_tick_ns_lo", "type": "uint32_t"},
+     {"name": "last_tick_ns_hi", "type": "uint32_t"},
+     {"name": "now_ns_lo",       "type": "uint32_t"},
+     {"name": "now_ns_hi",       "type": "uint32_t"},
+     {"name": "alpha",           "type": "float", "desc": "clamped fraction of the current inter-tick interval elapsed since the newest tick"}
+    ]},
+   {"struct_name": "roth_map_event_v1", "fields": [
+     {"name": "struct_size", "type": "uint32_t"}, {"name": "generation", "type": "uint32_t"}, {"name": "flags", "type": "uint32_t"}
+    ]},
+   {"struct_name": "roth_palette_event_v1", "fields": [
+     {"name": "struct_size", "type": "uint32_t"}, {"name": "generation", "type": "uint32_t"}, {"name": "flags", "type": "uint32_t"}
+    ]},
+   {"struct_name": "roth_video_event_v1", "fields": [
+     {"name": "struct_size", "type": "uint32_t"}, {"name": "generation", "type": "uint32_t"}, {"name": "flags", "type": "uint32_t"},
+     {"name": "pixel_w", "type": "uint32_t"}, {"name": "pixel_h", "type": "uint32_t"},
+     {"name": "aspect_w", "type": "uint32_t"}, {"name": "aspect_h", "type": "uint32_t"}
+    ]},
+   {"struct_name": "roth_window_state_v1", "note": "Applied host window state. generation advances whenever the present thread applies a request.",
+    "fields": [
+     {"name": "struct_size", "type": "uint32_t"}, {"name": "generation", "type": "uint32_t"},
+     {"name": "window_mode", "type": "uint32_t"}, {"name": "present_mode", "type": "uint32_t"},
+     {"name": "min_present_interval_us", "type": "uint32_t", "desc": "minimum present interval; zero is uncapped"},
+     {"name": "last_request_result", "type": "int32_t", "desc": "roth_result for the most recently applied request"}
+    ]}
   ]
  },
 
@@ -56,6 +157,65 @@
   ]
  },
 
+ "api_tables": {
+  "note": "Host-service sub-tables reached through trailing pointer fields of roth_api_v1. Each sub-table leads with struct_size so a plugin can feature-detect appended methods. Platform implementations bind through the generated host adapter table.",
+  "tables": [
+   {
+    "struct_name": "roth_present_v1",
+    "field_name": "present",
+    "field_desc": "full-colour world-frame present channel (NULL on a host that predates it)",
+    "note": "The full-colour world present channel. submit_world_frame is GAME-context only and copies the described source before returning. The first plugin whose submission returns ROTH_OK owns the channel until unload; submissions and withdrawals from other plugins return ROTH_ERR_NOT_OWNER. The owner may withdraw immediately. If an owner stops submitting without withdrawing, the host stops compositing after 16 present iterations as a crash-safety backstop. Query get_present_caps instead of assuming dimension limits.",
+    "members": [
+     {"name": "struct_size", "type": "uint32_t", "desc": "sizeof(struct roth_present_v1) as the host built it (feature-detect newer methods)"},
+     {"name": "submit_world_frame", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"},
+        {"type": "const struct roth_world_frame_v1 *", "name": "frame"}],
+      "host_symbol": "roth_present_submit_world_frame",
+      "desc": "copy and publish one caller-built frame descriptor. The viewport is required, travels with the frame, and is clipped to the current engine dimensions. Returns roth_result"},
+     {"name": "withdraw_world_frame", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}],
+      "host_symbol": "roth_present_withdraw_world_frame",
+      "desc": "stop compositing the owner's world frame immediately; returns ROTH_ERR_NOT_OWNER for another plugin"},
+     {"name": "get_present_caps", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"},
+        {"type": "struct roth_present_caps_v1 *", "name": "caps"}],
+      "host_symbol": "roth_present_get_present_caps",
+      "desc": "write the host dimension limits and supported format bitmask; returns roth_result"}
+    ]
+   },
+   {
+    "struct_name": "roth_window_v1",
+    "field_name": "window",
+    "field_desc": "window and display control, host-owned (NULL on a host that predates it)",
+    "note": "Window and display control. GAME-context setters validate and record requests; the host present thread applies them and publishes the applied state and result. A minimum present interval is post-present sleep and composes with synchronization, so the slower limit wins. Display modes are an informational snapshot of the window's current display for settings UIs; the host republishes the list when the window changes display. No mode-set operation is provided.",
+    "members": [
+     {"name": "struct_size", "type": "uint32_t", "desc": "sizeof(struct roth_window_v1) as the host built it (feature-detect newer methods)"},
+     {"name": "set_window_mode", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}, {"type": "uint32_t", "name": "mode"}],
+      "host_symbol": "roth_window_set_window_mode",
+      "desc": "record a ROTH_WINMODE_* request. Exclusive fullscreen returns ROTH_ERR_UNSUPPORTED in this ABI version"},
+     {"name": "set_present_mode", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}, {"type": "uint32_t", "name": "mode"}],
+      "host_symbol": "roth_window_set_present_mode", "desc": "record a ROTH_PRESENT_* request; adaptive mode may be rejected when applied"},
+     {"name": "set_min_present_interval_us", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}, {"type": "uint32_t", "name": "usec"}],
+      "host_symbol": "roth_window_set_min_present_interval_us",
+      "desc": "record the minimum host present interval in microseconds; zero is uncapped. To convert an fps setting, use 1000000 / fps"},
+     {"name": "get_window_state", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}, {"type": "struct roth_window_state_v1 *", "name": "state"}],
+      "host_symbol": "roth_window_get_window_state", "desc": "copy the last applied window state; returns roth_result"},
+     {"name": "get_display_mode_count", "ret": "int32_t", "params": [{"type": "const struct roth_api_v1 *", "name": "api"}],
+      "host_symbol": "roth_window_get_display_mode_count", "desc": "number of modes in the informational current-display snapshot"},
+     {"name": "get_display_mode", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}, {"type": "int32_t", "name": "idx"},
+        {"type": "uint32_t *", "name": "w"}, {"type": "uint32_t *", "name": "h"}, {"type": "uint32_t *", "name": "refresh_mhz"}],
+      "host_symbol": "roth_window_get_display_mode",
+      "desc": "read one snapshot entry; refresh is millihertz and output pointers may be NULL. Returns ROTH_ERR_RANGE for an invalid index"}
+    ]
+   }
+  ]
+ },
+
  "callbacks": {
   "note": "Context-tagged lifecycle callback typedefs (design 10.4). v0.1 seed only — the loader milestone finalizes the plugin-query export, override callback typedefs (roth_next_<fn>), and the resolved-chain contract. Each takes the immutable host API table.",
   "typedefs": [
@@ -67,7 +227,11 @@
    {"name": "roth_on_unload_main_fn",          "context": "ROTH_CTX_MAIN",     "desc": "teardown, only after game stop"},
    {"name": "roth_on_register_overrides_main_fn", "context": "ROTH_CTX_MAIN", "params": [{"type": "struct roth_registrar_v1 *", "name": "reg"}], "desc": "register function overrides: call roth_override(reg, ROTH_FN_<fn>, my_cb, priority) for each. Runs on MAIN after on_load, before any engine/timer/audio thread — the host builds the immutable priority chains and patches entries from these registrations"},
    {"name": "roth_on_scancode_tick_isr_fn",    "context": "ROTH_CTX_TICK_ISR", "ret": "uint8_t", "params": [{"type": "uint8_t", "name": "sc"}], "desc": "input seam: every keystroke before the engine sees it, in TICK_ISR context (keyboard-ISR surrogate: NO engine calls). Return the (possibly rewritten) set-1 scancode, or 0 to SWALLOW the key (no state change, like a dropped prefix). Chained across plugins in load order; a 0 return stops the chain."},
-   {"name": "roth_on_mouse_poll_game_fn",      "context": "ROTH_CTX_GAME",     "params": [{"type": "struct roth_mouse_poll_v1 *", "name": "mp"}], "desc": "int33 mouse seam: fires on the GAME thread after each mouse poll (engine calls legal), with the SDK-neutral roth_mouse_poll_v1 result. Read mp->ax + the poll registers; modify ebx/ecx/edx to filter what the game sees (overlay input capture). Chained across plugins in load order."}
+   {"name": "roth_on_mouse_poll_game_fn",      "context": "ROTH_CTX_GAME",     "params": [{"type": "struct roth_mouse_poll_v1 *", "name": "mp"}], "desc": "int33 mouse seam: fires on the GAME thread after each mouse poll (engine calls legal), with the SDK-neutral roth_mouse_poll_v1 result. Read mp->ax + the poll registers; modify ebx/ecx/edx to filter what the game sees (overlay input capture). Chained across plugins in load order."},
+   {"name": "roth_on_map_loaded_game_fn",      "context": "ROTH_CTX_GAME",     "params": [{"type": "const struct roth_map_event_v1 *", "name": "event"}], "desc": "a new level's geometry, textures, and per-map colour tables are staged and ready to read. The first map event a plugin sees carries ROTH_EVENT_INITIAL."},
+   {"name": "roth_on_palette_changed_game_fn", "context": "ROTH_CTX_GAME",     "params": [{"type": "const struct roth_palette_event_v1 *", "name": "event"}], "desc": "the VGA DAC palette changed. The synthetic first event carries ROTH_EVENT_INITIAL. Screen fades can produce a burst of events; heavy consumers may debounce."},
+   {"name": "roth_on_video_mode_changed_fn",   "context": "ROTH_CTX_GAME",     "params": [{"type": "const struct roth_video_event_v1 *", "name": "event"}], "desc": "the engine pixel dimensions changed. The event also carries the logical aspect dimensions used by the host present path, and the synthetic first event carries ROTH_EVENT_INITIAL."},
+   {"name": "roth_on_present_pace_fn",         "context": "ROTH_CTX_PRESENT",  "params": [{"type": "const struct roth_present_timing_v1 *", "name": "timing"}], "desc": "called exactly once per host present-loop iteration immediately before the host presents. alpha is (now - last_tick) / (last_tick - prev_tick), clamped to [0,1]; before two ticks exist it is 1. Interpolate lerp(snapshot[N-1], snapshot[N], alpha) for smooth tick-latent motion. No engine calls, game_ram writes, blocking, or frame submission."}
   ]
  },
 
@@ -116,7 +280,11 @@
    {"name": "on_unload",         "typedef": "roth_on_unload_main_fn"},
    {"name": "on_register_overrides", "typedef": "roth_on_register_overrides_main_fn"},
    {"name": "on_scancode",       "typedef": "roth_on_scancode_tick_isr_fn"},
-   {"name": "on_mouse_poll",     "typedef": "roth_on_mouse_poll_game_fn"}
+   {"name": "on_mouse_poll",     "typedef": "roth_on_mouse_poll_game_fn"},
+   {"name": "on_map_loaded",         "typedef": "roth_on_map_loaded_game_fn"},
+   {"name": "on_palette_changed",    "typedef": "roth_on_palette_changed_game_fn"},
+   {"name": "on_video_mode_changed", "typedef": "roth_on_video_mode_changed_fn"},
+   {"name": "on_present_pace",       "typedef": "roth_on_present_pace_fn"}
   ]
  }
 }

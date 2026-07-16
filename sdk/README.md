@@ -75,6 +75,7 @@ draw a **synthetic ID** from the reserved space at/above `0x80000000`. The curre
 | `include/roth_sdk_overrides.h` | per-overrideable-function machinery: the typed `roth_override_<fn>_fn` callback typedef and the `roth_next_<fn>()` chain thunk for each eligible function (included at the end of `roth_sdk.h`)                                                                                                                                                             |
 | `abi/descriptor.json`          | the machine ABI descriptor: i386 field offsets/sizes for every public struct, the engine-table slot order, and signature IDs — the artifact CI diffs against `abi/released/`                                                                                                                                                                                |
 | `generated/host_adapters.c`    | the host API table plugins call through — the engine-call table (each slot bound to the real `engine.h` function) plus the bounded `game_ram` accessors — linked into the moddable binary. Compiling it standalone is also a **compile-time proof** that the generated wrapper types match `engine.h` exactly.                                              |
+| `generated/abi_asserts.c`      | a compile-only translation unit with `sizeof` assertions for every public struct and `offsetof` assertions for every frozen field, generated from the descriptor.                                                                                                                                                |
 | `abi/released/<ver>/`          | frozen ABI baselines (`v0.1` … `v0.5`). CI diffs the current descriptor against the latest release and enforces the bump policy.                                                                                                                                                                                                                            |
 
 ## The exposed engine surface
@@ -126,17 +127,47 @@ a pool-derived pointer across an engine call or a tick** — re-resolve through 
 
 ## Execution contexts
 
-Callbacks and overrides run in one of four platform-neutral contexts, a frozen enum:
+Callbacks and overrides run in one of these platform-neutral contexts, a frozen enum:
 
 - `ROTH_CTX_MAIN` — boot / main thread: discovery, validation, patching, all before any engine,
   timer, or audio thread starts. Anything is legal.
 - `ROTH_CTX_GAME` — the game thread: per-frame logic. Engine calls are legal.
 - `ROTH_CTX_TICK_ISR` — the compositor/timer tick: a restricted API view. **No engine calls**;
   keep it fast.
+- `ROTH_CTX_PRESENT` — the host present thread: once per host present-loop iteration, immediately
+  before present. Pacing and coordination only — **no engine calls, no game_ram writes, no frame
+  submission, never block**.
 - `ROTH_CTX_AUDIO` — reserved; a restricted API view.
 
 Every callback typedef is context-suffixed (`..._main_fn`, `..._game_fn`, `..._tick_isr_fn`), and
-the enumerators are frozen ABI — never renumbered.
+the enumerators are frozen ABI — never renumbered (new contexts are appended at the end).
+
+## World presentation, notifications, and window state
+
+`api->present->submit_world_frame` copies a caller-built `roth_world_frame_v1` in GAME context.
+`ROTH_PIXFMT_ARGB8888` is an array of numeric `0xAARRGGBB` words, stored B, G, R, A in little-endian
+memory. The required engine-coordinate viewport is part of each frame and is clipped to the current
+engine dimensions. Query `get_present_caps` for limits. The first successful submitter owns the
+channel until unload; other plugins receive `ROTH_ERR_NOT_OWNER`. The owner can
+`withdraw_world_frame` immediately, while a 16-present-iteration stale-frame cutoff remains a
+crash-safety backstop.
+
+The three GAME notifications carry event records with per-kind generations. Palette and video
+deliver a synthetic `ROTH_EVENT_INITIAL` before that plugin's first `on_frame_game`; the first map
+event a plugin naturally sees is also initial. Notifications dispatch before `on_frame_game` in the
+same pump. Palette events describe the VGA DAC palette; per-map colour tables belong to map events.
+Video events carry both pixel and logical aspect dimensions used by presentation.
+
+`on_present_pace` receives `roth_present_timing_v1` once per host present iteration. Its alpha is
+`(now - last_tick) / (last_tick - prev_tick)`, clamped to `[0,1]`; rendering
+`lerp(snapshot[N-1], snapshot[N], alpha)` produces smooth tick-latent motion. Before two ticks,
+alpha is 1 and the serials expose that state.
+
+Window setters enqueue window mode, present mode, and a minimum present interval. The applied
+`roth_window_state_v1` has a generation and the result of the latest applied request. The interval
+is post-present sleep and composes with synchronization, so the slower limit wins; an fps setting
+maps to `interval_us = 1000000 / fps`. Display modes are an informational current-display snapshot,
+not a mode-setting API.
 
 ## The override-target manifest
 
@@ -153,8 +184,13 @@ machinery).
 
 ## Versioning + the bump policy
 
-The SDK and ABI are at **0.5** (`ROTH_SDK_MAJOR/MINOR`, `ROTH_ABI_MAJOR/MINOR` in `roth_sdk.h`;
-`version` in `sdk_api.json`). The load rule the host enforces:
+The SDK and ABI are at **0.6** (`ROTH_SDK_MAJOR/MINOR`, `ROTH_ABI_MAJOR/MINOR` in `roth_sdk.h`;
+`version` in `sdk_api.json`). 0.6 appended, all trailing (every prior offset byte-identical): the
+`PRESENT` execution context; two host-service sub-tables reached through new trailing `roth_api_v1`
+pointers — `roth_present_v1` (a descriptor-based full-colour world-frame channel) and
+`roth_window_v1` (window mode / present mode / minimum-interval / display-mode information);
+and four new trailing `roth_plugin_info_v1` callbacks — `on_map_loaded`, `on_palette_changed`,
+`on_video_mode_changed` and `on_present_pace`. The load rule the host enforces:
 
 > a plugin loads **iff** `abi_major == host.abi_major` **and** `abi_minor <= host.abi_minor`.
 
@@ -186,8 +222,8 @@ make -C sdk check    # run all offline CI gates
 4. **exposure-order** — THE EXPOSURE-ORDER LAW: the released baseline's engine-table slot sequence
    must be an exact prefix of the current one; any re-sort/insert/removal fails hard, no bump
    excuses it.
-5. **compile** — `roth_sdk.h` syntax-only and `host_adapters.c -c` under
-   `gcc -m32 -std=c11 -Wall -Wextra -Werror` (the ABI proof).
+5. **compile** — `roth_sdk.h` syntax-only plus `host_adapters.c` and `abi_asserts.c` compile under
+   `gcc -m32 -std=c11 -Wall -Wextra -Werror` (signature and frozen-layout proofs).
 6. **abi-probe** — compile + run an `offsetof`/`sizeof` probe under `-m32` and check the real i386
    layout against `descriptor.json` (SKIPs, never fails, if a 32-bit build/run is unavailable).
 7. **override-validate** — validate the override machinery (entry-pad presence, no branches landing

@@ -51,4 +51,13 @@ void plugins_dispatch_compose_tick(uint8_t *pixels, uint32_t width, uint32_t hei
  * (stops the chain). Returns the possibly-rewritten scancode (== sc when no plugin wants it). */
 uint8_t plugins_dispatch_scancode(uint8_t sc);
 
+struct roth_present_timing_v1;
+
+/* on_present_pace(PRESENT): from the host present thread immediately before each host present. */
+void plugins_dispatch_present_pace(const struct roth_present_timing_v1 *timing);
+
+/* Non-zero once at least one plugin is loaded (queried by the present thread to skip all present-
+ * channel / present-pace / window-control work — and keep the present loop identical — with no mods). */
+int plugins_any_loaded(void);
+
 #endif /* PLUGIN_LOADER_H */

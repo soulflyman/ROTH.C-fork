@@ -2,14 +2,14 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 5,
+ "sdk_minor": 6,
  "abi_major": 0,
- "abi_minor": 5,
+ "abi_minor": 6,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
   "roth_api_v1": {
-   "size": 20,
+   "size": 28,
    "fields": [
     {
      "name": "abi_major",
@@ -48,6 +48,20 @@
      "offset": 16,
      "size": 4,
      "kind": "fnptr"
+    },
+    {
+     "name": "present",
+     "offset": 20,
+     "size": 4,
+     "kind": "ptr",
+     "points_to": "roth_present_v1"
+    },
+    {
+     "name": "window",
+     "offset": 24,
+     "size": 4,
+     "kind": "ptr",
+     "points_to": "roth_window_v1"
     }
    ]
   },
@@ -557,6 +571,393 @@
     }
    ]
   },
+  "roth_present_v1": {
+   "size": 16,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "submit_world_frame",
+     "offset": 4,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "withdraw_world_frame",
+     "offset": 8,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "get_present_caps",
+     "offset": 12,
+     "size": 4,
+     "kind": "fnptr"
+    }
+   ]
+  },
+  "roth_window_v1": {
+   "size": 28,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "set_window_mode",
+     "offset": 4,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "set_present_mode",
+     "offset": 8,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "set_min_present_interval_us",
+     "offset": 12,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "get_window_state",
+     "offset": 16,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "get_display_mode_count",
+     "offset": 20,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "get_display_mode",
+     "offset": 24,
+     "size": 4,
+     "kind": "fnptr"
+    }
+   ]
+  },
+  "roth_world_frame_v1": {
+   "size": 52,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "pixels",
+     "offset": 4,
+     "size": 4,
+     "kind": "ptr"
+    },
+    {
+     "name": "w",
+     "offset": 8,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "h",
+     "offset": 12,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "pitch_bytes",
+     "offset": 16,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "format",
+     "offset": 20,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "vx",
+     "offset": 24,
+     "size": 4,
+     "kind": "int32"
+    },
+    {
+     "name": "vy",
+     "offset": 28,
+     "size": 4,
+     "kind": "int32"
+    },
+    {
+     "name": "vw",
+     "offset": 32,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "vh",
+     "offset": 36,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "composite_mode",
+     "offset": 40,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "transparent_index",
+     "offset": 44,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "flags",
+     "offset": 48,
+     "size": 4,
+     "kind": "uint32"
+    }
+   ]
+  },
+  "roth_present_caps_v1": {
+   "size": 16,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "max_w",
+     "offset": 4,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "max_h",
+     "offset": 8,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "formats",
+     "offset": 12,
+     "size": 4,
+     "kind": "uint32"
+    }
+   ]
+  },
+  "roth_present_timing_v1": {
+   "size": 40,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "tick_serial",
+     "offset": 4,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "present_serial",
+     "offset": 8,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "prev_tick_ns_lo",
+     "offset": 12,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "prev_tick_ns_hi",
+     "offset": 16,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "last_tick_ns_lo",
+     "offset": 20,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "last_tick_ns_hi",
+     "offset": 24,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "now_ns_lo",
+     "offset": 28,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "now_ns_hi",
+     "offset": 32,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "alpha",
+     "offset": 36,
+     "size": 4,
+     "kind": "float"
+    }
+   ]
+  },
+  "roth_map_event_v1": {
+   "size": 12,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "generation",
+     "offset": 4,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "flags",
+     "offset": 8,
+     "size": 4,
+     "kind": "uint32"
+    }
+   ]
+  },
+  "roth_palette_event_v1": {
+   "size": 12,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "generation",
+     "offset": 4,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "flags",
+     "offset": 8,
+     "size": 4,
+     "kind": "uint32"
+    }
+   ]
+  },
+  "roth_video_event_v1": {
+   "size": 28,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "generation",
+     "offset": 4,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "flags",
+     "offset": 8,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "pixel_w",
+     "offset": 12,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "pixel_h",
+     "offset": 16,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "aspect_w",
+     "offset": 20,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "aspect_h",
+     "offset": 24,
+     "size": 4,
+     "kind": "uint32"
+    }
+   ]
+  },
+  "roth_window_state_v1": {
+   "size": 24,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "generation",
+     "offset": 4,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "window_mode",
+     "offset": 8,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "present_mode",
+     "offset": 12,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "min_present_interval_us",
+     "offset": 16,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "last_request_result",
+     "offset": 20,
+     "size": 4,
+     "kind": "int32"
+    }
+   ]
+  },
   "roth_mouse_poll_v1": {
    "size": 16,
    "fields": [
@@ -591,7 +992,7 @@
    ]
   },
   "roth_plugin_info_v1": {
-   "size": 64,
+   "size": 80,
    "fields": [
     {
      "name": "abi_major",
@@ -716,6 +1117,34 @@
      "name": "on_mouse_poll",
      "type": "roth_on_mouse_poll_game_fn",
      "offset": 60,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "on_map_loaded",
+     "type": "roth_on_map_loaded_game_fn",
+     "offset": 64,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "on_palette_changed",
+     "type": "roth_on_palette_changed_game_fn",
+     "offset": 68,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "on_video_mode_changed",
+     "type": "roth_on_video_mode_changed_fn",
+     "offset": 72,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "on_present_pace",
+     "type": "roth_on_present_pace_fn",
+     "offset": 76,
      "size": 4,
      "kind": "fnptr"
     }
@@ -1295,6 +1724,11 @@
    "name": "ROTH_CTX_AUDIO",
    "value": 3,
    "desc": "audio callback context: restricted API view"
+  },
+  {
+   "name": "ROTH_CTX_PRESENT",
+   "value": 4,
+   "desc": "host present thread: runs once per host present-loop iteration (not per game tick or necessarily per physical refresh). No engine calls, game_ram writes, blocking, or frame submission; intended for pacing and coordination only"
   }
  ]
 }

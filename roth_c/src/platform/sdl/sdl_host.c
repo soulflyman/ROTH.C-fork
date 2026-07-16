@@ -23,10 +23,20 @@
 #include <SDL3/SDL.h>
 #include "shared_fb.h"
 #include "sdl/sdl_audio.h"   /* M2: the in-process SDL3 audio consumer (PCM ring + MIDI->TSF) */
+#include "present_channel.h" /* the SDK RGBA present channel + present pacing + window control (host side) */
+#include "roth_sdk.h"        /* public timing/state/enumeration records used by the host plumbing */
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+
+/* The present-paced plugin dispatch lives in the loader (moddable flavor only); the vanilla flavor
+ * links no loader, so this call site — and every present-channel / window-control call below — is
+ * compiled out under -DROTH_VANILLA, leaving the present loop byte-for-byte the engine-only path. */
+#ifndef ROTH_VANILLA
+void plugins_dispatch_present_pace(const struct roth_present_timing_v1 *timing); /* plugin_loader.c */
+int  plugins_any_loaded(void);                     /* plugin_loader.c */
+#endif
 
 /* the published framebuffer + input rings (defined in main.c, created by shm_setup()). The game
  * thread's shm_tick is the sole writer of pixels/palette/frame; we are the sole reader. We are the
@@ -127,6 +137,26 @@ static inline uint32_t rd_frame(void)
 {
     return *(volatile uint32_t *)&g_shm->frame;
 }
+
+#ifndef ROTH_VANILLA
+/* Refresh the informational display-mode snapshot whenever the window moves between displays. */
+static void publish_display_modes(SDL_Window *win)
+{
+    struct roth_display_mode modes[128];
+    int count = 0, available = 0;
+    SDL_DisplayMode **list = SDL_GetFullscreenDisplayModes(SDL_GetDisplayForWindow(win), &available);
+    if (list) {
+        for (int i = 0; i < available && count < 128; i++) {
+            modes[count].w = (uint32_t)list[i]->w;
+            modes[count].h = (uint32_t)list[i]->h;
+            modes[count].refresh_mhz = (uint32_t)(list[i]->refresh_rate * 1000.0f + 0.5f);
+            count++;
+        }
+        SDL_free(list);
+    }
+    roth_window_publish_modes(modes, count);
+}
+#endif
 
 /* M3 auto-sanity: can SDL video init here? Init + immediately quit the video subsystem, so main()
  * can fail cleanly (suggesting --headless) before spawning the game thread. See sdl_host.h. */
@@ -230,6 +260,29 @@ int sdl_present_run(int scale)
         shot_at = atoi(getenv("ROTH_SDL_SHOT_FRAMES"));
 
     static uint32_t rgb[ROTH_FB_MAX]; /* fits hi-res (640x480) */
+
+#ifndef ROTH_VANILLA
+    /* The SDK present channel / present pacing / window control run ONLY when a plugin is loaded. With
+     * no plugin the present loop stays byte-for-byte the engine-only path (no per-iteration polling, no
+     * dispatch, no channel acquire) — the zero-plugins-no-behavior-change invariant, timing included. */
+    const int mods_on = plugins_any_loaded();
+    /* second streaming texture for a mod's RGBA world image — created on the first publish and resized
+     * when the published dimensions change. NULL until a plugin publishes a world frame, so until then
+     * the draw path below is exactly the engine-only path (bit-identical to a build with no channel). */
+    SDL_Texture *wtex = NULL;
+    int wtex_w = 0, wtex_h = 0;
+    /* Applied window state is owned here with the SDL objects and mirrored through a seqlock. */
+    uint32_t cur_window_mode = ROTH_WINMODE_WINDOWED;
+    uint32_t cur_present_mode = ROTH_PRESENT_FIFO;
+    uint32_t cur_min_interval_us = 0;
+    uint64_t interval_last_pc = 0;
+    if (mods_on) {
+        roth_window_publish_state(cur_window_mode, cur_present_mode, cur_min_interval_us,
+                                  ROTH_OK, 0);
+        publish_display_modes(win);
+    }
+#endif
+
     int running = 1;
     while (running && g_shm->host_alive) {
         SDL_Event e;
@@ -276,6 +329,12 @@ int sdl_present_run(int scale)
                 SDL_SetWindowRelativeMouseMode(win, false); /* free cursor on alt-tab */
                 grabbed = 0;
                 break;
+#ifndef ROTH_VANILLA
+            case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+                if (mods_on)
+                    publish_display_modes(win);
+                break;
+#endif
             default:
                 break;
             }
@@ -287,6 +346,39 @@ int sdl_present_run(int scale)
          * signal mask. */
         sdl_audio_poll_open();
         sdl_audio_log_tick();
+
+#ifndef ROTH_VANILLA
+        if (mods_on) {
+            /* All SDL mutation stays on this thread. Each consumed request publishes the resulting
+             * applied state and advances the observable state generation, including backend failure. */
+            uint32_t requested;
+            if (roth_window_take_window_mode_req(&requested)) {
+                int32_t result = SDL_SetWindowFullscreen(
+                    win, requested == ROTH_WINMODE_BORDERLESS_FULLSCREEN)
+                    ? ROTH_OK : ROTH_ERR_UNSUPPORTED;
+                if (result == ROTH_OK)
+                    cur_window_mode = requested;
+                roth_window_publish_state(cur_window_mode, cur_present_mode, cur_min_interval_us,
+                                          result, 1);
+            }
+            if (roth_window_take_present_mode_req(&requested)) {
+                int vsync = requested == ROTH_PRESENT_FIFO ? 1 :
+                            requested == ROTH_PRESENT_ADAPTIVE ? SDL_RENDERER_VSYNC_ADAPTIVE :
+                            SDL_RENDERER_VSYNC_DISABLED;
+                int32_t result = SDL_SetRenderVSync(ren, vsync)
+                    ? ROTH_OK : ROTH_ERR_UNSUPPORTED;
+                if (result == ROTH_OK)
+                    cur_present_mode = requested;
+                roth_window_publish_state(cur_window_mode, cur_present_mode, cur_min_interval_us,
+                                          result, 1);
+            }
+            if (roth_window_take_min_interval_req(&requested)) {
+                cur_min_interval_us = requested;
+                roth_window_publish_state(cur_window_mode, cur_present_mode, cur_min_interval_us,
+                                          ROTH_OK, 1);
+            }
+        }
+#endif
 
         /* Follow the host's current resolution + intended display aspect (viewer.c:304-325). The
          * pixel buffer is cur_w x cur_h; the display aspect (aspect_w:aspect_h) may differ (320x400
@@ -310,25 +402,85 @@ int sdl_present_run(int scale)
             cur_log_w = aw; cur_log_h = ah;
         }
 
-        /* palette (6-bit VGA DAC) -> ARGB8888, read under the seqlock-lite frame guard */
+#ifndef ROTH_VANILLA
+        if (mods_on)
+            roth_present_set_engine_dimensions((uint32_t)w, (uint32_t)h);
+#endif
+
+#ifndef ROTH_VANILLA
+        /* acquire the freshest published world frame; 0 -> present the engine's 8bpp frame unchanged. */
+        struct roth_present_frame wf;
+        int world_ready = mods_on ? roth_present_acquire(&wf) : 0;
+        if (world_ready && (!wtex || wtex_w != (int)wf.w || wtex_h != (int)wf.h)) {
+            if (wtex) SDL_DestroyTexture(wtex);
+            wtex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+                                     SDL_TEXTUREACCESS_STREAMING, (int)wf.w, (int)wf.h);
+            if (wtex) SDL_SetTextureScaleMode(wtex, SDL_SCALEMODE_LINEAR);
+            wtex_w = (int)wf.w;
+            wtex_h = (int)wf.h;
+        }
+        if (world_ready && !wtex)
+            world_ready = 0;   /* keep the engine frame opaque if the auxiliary texture failed */
+#endif
+
+        /* Palette (6-bit VGA DAC) -> ARGB8888 under the frame guard. Inside an active viewport,
+         * colorkey mode clears alpha only for the submitted palette index and world-only mode clears
+         * it for every engine pixel. Outside the viewport the engine frame stays opaque. */
         int n = w * h;
         int tries = 0;
         uint32_t f0, f1;
         do {
             f0 = rd_frame();
-            for (int i = 0; i < n; i++) {
-                uint8_t idx = g_shm->pixels[i];
-                uint8_t r = g_shm->palette[idx * 3 + 0] << 2;
-                uint8_t g = g_shm->palette[idx * 3 + 1] << 2;
-                uint8_t b = g_shm->palette[idx * 3 + 2] << 2;
-                rgb[i] = 0xff000000u | (r << 16) | (g << 8) | b;
+#ifndef ROTH_VANILLA
+            if (world_ready) {
+                int vx = wf.vw ? wf.vx : 0, vy = wf.vh ? wf.vy : 0;
+                int vr = wf.vw ? (wf.vx + (int)wf.vw) : w;
+                int vb = wf.vh ? (wf.vy + (int)wf.vh) : h;
+                for (int i = 0; i < n; i++) {
+                    uint8_t idx = g_shm->pixels[i];
+                    uint8_t r = g_shm->palette[idx * 3 + 0] << 2;
+                    uint8_t g = g_shm->palette[idx * 3 + 1] << 2;
+                    uint8_t b = g_shm->palette[idx * 3 + 2] << 2;
+                    uint32_t a = 0xff000000u;
+                    int px = i % w, py = i / w;
+                    if (px >= vx && px < vr && py >= vy && py < vb) {
+                        if (wf.composite_mode == ROTH_COMPOSITE_WORLD_ONLY ||
+                            idx == (uint8_t)wf.transparent_index)
+                            a = 0u;
+                    }
+                    rgb[i] = a | (r << 16) | (g << 8) | b;
+                }
+            } else
+#endif
+            {
+                for (int i = 0; i < n; i++) {
+                    uint8_t idx = g_shm->pixels[i];
+                    uint8_t r = g_shm->palette[idx * 3 + 0] << 2;
+                    uint8_t g = g_shm->palette[idx * 3 + 1] << 2;
+                    uint8_t b = g_shm->palette[idx * 3 + 2] << 2;
+                    rgb[i] = 0xff000000u | (r << 16) | (g << 8) | b;
+                }
             }
             f1 = rd_frame();
         } while (f1 != f0 && ++tries < 2);
 
         SDL_UpdateTexture(tex, NULL, rgb, w * 4);
         SDL_RenderClear(ren);
-        SDL_RenderTexture(ren, tex, NULL, NULL);
+#ifndef ROTH_VANILLA
+        if (world_ready) {
+            SDL_UpdateTexture(wtex, NULL, wf.rgba, (int)wf.w * 4);
+            /* Map the engine-space viewport into the logical presentation rectangle. */
+            float sx = (float)aw / (float)w, sy = (float)ah / (float)h;
+            SDL_FRect wdst = { (float)wf.vx * sx, (float)wf.vy * sy,
+                               (float)wf.vw * sx, (float)wf.vh * sy };
+            SDL_RenderTexture(ren, wtex, NULL, &wdst);
+            SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+            SDL_RenderTexture(ren, tex, NULL, NULL);
+        } else
+#endif
+        {
+            SDL_RenderTexture(ren, tex, NULL, NULL);
+        }
         if (shot_path && !shot_done && ++present_ct >= shot_at) {
             SDL_Surface *sh = SDL_RenderReadPixels(ren, NULL);
             if (sh && SDL_SaveBMP(sh, shot_path))
@@ -338,7 +490,33 @@ int sdl_present_run(int scale)
             if (sh) SDL_DestroySurface(sh);
             shot_done = 1;
         }
-        SDL_RenderPresent(ren); /* vsync paces the loop */
+#ifndef ROTH_VANILLA
+        if (mods_on) {
+            /* PRESENT context is delivered exactly once per loop, at the last coordination point
+             * before the host presents. The callback cannot submit a frame in this ABI version. */
+            struct roth_present_timing_v1 timing;
+            roth_present_make_timing(&timing);
+            roth_present_mark_present_callback(1);
+            plugins_dispatch_present_pace(&timing);
+            roth_present_mark_present_callback(0);
+        }
+#endif
+        SDL_RenderPresent(ren); /* synchronization mode may pace the loop */
+#ifndef ROTH_VANILLA
+        /* Post-present minimum interval; synchronization and this interval compose, slower wins. */
+        if (mods_on) {
+            if (cur_min_interval_us > 0) {
+                uint64_t freq = SDL_GetPerformanceFrequency();
+                uint64_t target = ((uint64_t)cur_min_interval_us * freq) / 1000000ull;
+                uint64_t now_pc = SDL_GetPerformanceCounter();
+                if (interval_last_pc && (now_pc - interval_last_pc) < target)
+                    SDL_DelayNS((target - (now_pc - interval_last_pc)) * 1000000000ull / freq);
+                interval_last_pc = SDL_GetPerformanceCounter();
+            } else {
+                interval_last_pc = 0;
+            }
+        }
+#endif
     }
 
     /* window closed (or the game exited): ask the game thread to quit, mirror viewer teardown. */
@@ -346,6 +524,9 @@ int sdl_present_run(int scale)
     if (!running)
         g_shm->quit = 1; /* user closed the window: the game thread's shm_tick honors quit -> _exit */
     sdl_audio_shutdown(); /* M2: stop + join the audio callback, close the synth, quit AUDIO subsystem */
+#ifndef ROTH_VANILLA
+    if (wtex) SDL_DestroyTexture(wtex);
+#endif
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);

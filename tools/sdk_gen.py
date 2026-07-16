@@ -14,6 +14,8 @@ Outputs (generated, checked in; CI regenerates-and-diffs against them):
                                compile-time proof that the generated wrapper types match
                                engine.h exactly (the moddable binary links it as the host
                                API table).
+  sdk/generated/abi_asserts.c a compile-only translation unit pinning every public
+                               struct size and field offset to descriptor.json.
 
 i386 ABI model: every API-table field is a function pointer (4 bytes, 4-align); the
 top-level struct leads with abi_major(u16)/abi_minor(u16)/struct_size(u32).
@@ -33,6 +35,7 @@ HDR = os.path.join(SDK, "include", "roth_sdk.h")
 OVR_HDR = os.path.join(SDK, "include", "roth_sdk_overrides.h")
 DESC = os.path.join(SDK, "abi", "descriptor.json")
 ADAPTERS = os.path.join(SDK, "generated", "host_adapters.c")
+ASSERTS = os.path.join(SDK, "generated", "abi_asserts.c")
 
 PTR = 4  # i386 function-pointer size/alignment
 
@@ -177,6 +180,109 @@ def _plugin_layout(fields):
     return rows, size
 
 
+# ------------------------------------------------- api_tables (sub-struct tables) ----
+# An "api_table" is a host-service sub-struct reachable through a NEW TRAILING pointer field of
+# roth_api_v1 (append-only, exactly like engine/game_ram). Each has a leading struct_size (so a
+# plugin built against a newer minor can feature-detect a method the running host lacks) followed
+# by ROTH_CDECL function-pointer members bound to host symbols in host_adapters.c.
+def _api_table_member_field(m):
+    """Render one api_table member declaration: a scalar (has 'type') or a fnptr (has 'ret')."""
+    if m.get("ret") is not None:
+        line = _fnptr(m["ret"], m.get("params", []), m["name"])
+    else:
+        t = m["type"]
+        s = "" if t.endswith("*") else " "
+        line = f"{t}{s}{m['name']};"
+    return line + (f"  /* {m['desc']} */" if m.get("desc") else "")
+
+
+def _api_table_layout(members):
+    """i386 offsets/sizes for an api_table sub-struct (leading struct_size + fnptrs, struct align 4)."""
+    rows = []
+    off = 0
+    for m in members:
+        if m.get("ret") is not None:
+            sz = al = PTR
+            kind = "fnptr"
+        else:
+            sz, al = _scalar_sz_align(m.get("type", ""))
+            kind = ("uint16" if m.get("type") == "uint16_t" else
+                    "uint32" if m.get("type") == "uint32_t" else "fnptr")
+        off = (off + al - 1) & ~(al - 1)
+        rows.append({"name": m["name"], "offset": off, "size": sz, "kind": kind})
+        off += sz
+    size = (off + PTR - 1) & ~(PTR - 1)
+    return rows, size
+
+
+def _extern_host_decl(ret, params, symbol):
+    """A plain host-function extern declaration for host_adapters.c (the address the slot binds to)."""
+    types = ", ".join(_param_types(params)) or "void"
+    ret = ret.strip()
+    star = "" if ret.endswith("*") else " "
+    return f"extern {ret}{star}{symbol}({types});"
+
+
+def _api_tables(api):
+    """The list of host-service sub-tables (schema `api_tables.tables`; empty if none)."""
+    return api.get("api_tables", {}).get("tables", [])
+
+
+def _abi_structs(api):
+    """Plain public ABI structs (schema `abi_structs.structs`; caller/host-built descriptors and
+    event/state records — not function-pointer tables)."""
+    return api.get("abi_structs", {}).get("structs", [])
+
+
+_ABI_KIND = {"uint16_t": ("uint16", 2, 2), "uint32_t": ("uint32", 4, 4),
+             "int32_t": ("int32", 4, 4), "float": ("float", 4, 4)}
+
+
+def _abi_struct_layout(fields):
+    """i386 offsets/sizes for a plain ABI struct (scalar + pointer members, natural alignment,
+    struct align 4 — identical under the header's #pragma pack(4)). Returns (rows, size)."""
+    rows = []
+    off = 0
+    for f in fields:
+        kind, sz, al = _ABI_KIND.get(f["type"], ("ptr", PTR, PTR))
+        off = (off + al - 1) & ~(al - 1)
+        rows.append({"name": f["name"], "offset": off, "size": sz, "kind": kind})
+        off += sz
+    return rows, (off + PTR - 1) & ~(PTR - 1)
+
+
+# ---------------------------------------------------- abi_asserts.c (layout proof) ----
+def gen_asserts(desc):
+    """A GENERATED compile-time layout-assertion TU: _Static_assert of sizeof() for every public
+    struct and offsetof() for every field, straight from the descriptor. Compiled by the sdk
+    `compile` gate under -m32, so any edit (a pragma, a reordered field, a type change) that moves
+    a frozen offset refuses to compile — the descriptor's analytical layout IS the compiler's."""
+    L = []
+    w = L.append
+    w("/* abi_asserts.c — GENERATED compile-time ABI layout assertions (tools/sdk_gen.py).")
+    w(" *")
+    w(" * One _Static_assert per public-struct size and per field offset/size, generated from")
+    w(" * sdk/abi/descriptor.json's i386 layout. Compiled (never linked) by the sdk `compile`")
+    w(" * gate under gcc -m32 -std=c11 -Wall -Wextra -Werror: if the real compiler layout of")
+    w(" * roth_sdk.h ever disagrees with the descriptor — a packing change, an inserted field,")
+    w(" * a moved offset — this TU fails to compile and the gate fails. DO NOT EDIT BY HAND;")
+    w(" * regenerate: make -C sdk gen.")
+    w(" */")
+    w("#include <stddef.h>")
+    w('#include "roth_sdk.h"')
+    w("")
+    for sname in sorted(desc["structs"]):
+        s = desc["structs"][sname]
+        w(f'_Static_assert(sizeof(struct {sname}) == {s["size"]}, "sizeof {sname}");')
+        for f in s["fields"]:
+            w(f'_Static_assert(offsetof(struct {sname}, {f["name"]}) == {f["offset"]}, '
+              f'"offsetof {sname}.{f["name"]}");')
+            w(f'_Static_assert(sizeof(((struct {sname} *)0)->{f["name"]}) == {f["size"]}, '
+              f'"fieldsize {sname}.{f["name"]}");')
+        w("")
+    return "\n".join(L) + "\n"
+
+
 def _gen_overrides_api(w, api):
     """Emit the hand-curated registration surface: the roth_register_override_fn typedef, the
     roth_registrar_v1 struct the host hands on_register_overrides, and the roth_override() macro."""
@@ -220,7 +326,7 @@ def _gen_plugin_header(w, api):
     w("")
     w("/* ---- the single versioned plugin export + its info struct ---------------- */")
     w("/* A plugin ships mods/<name>/plugin.so exporting exactly ONE function:")
-    w(f"       ROTH_PLUGIN_EXPORT const struct {PLUGIN_STRUCT} *{pl['query_export']}(void);")
+    w(f"       ROTH_PLUGIN_EXPORT const struct {PLUGIN_STRUCT} *ROTH_CDECL {pl['query_export']}(void);")
     w("   returning a pointer to a static, immutable info struct. abi_major/abi_minor/")
     w("   struct_size lead it; the loader accepts the plugin iff")
     w("   abi_major == host AND abi_minor <= host. A NULL callback = not interested. */")
@@ -235,8 +341,9 @@ def _gen_plugin_header(w, api):
             w(f"    {t}{star}{f['name']};" + (f"  /* {desc} */" if desc else ""))
     w("};")
     w("")
-    w(f"/* The plugin's one export (host resolves it by dlsym). */")
-    w(f"ROTH_PLUGIN_EXPORT const struct {PLUGIN_STRUCT} *{pl['query_export']}(void);")
+    w("/* The plugin's one export type and declaration (host resolves it by dlsym). */")
+    w(f"typedef const struct {PLUGIN_STRUCT} *(ROTH_CDECL *{pl['query_export']}_fn)(void);")
+    w(f"ROTH_PLUGIN_EXPORT const struct {PLUGIN_STRUCT} *ROTH_CDECL {pl['query_export']}(void);")
     w("")
 
 
@@ -300,10 +407,12 @@ def gen_header(exposed, sigs, api):
     w("/* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */")
     w("")
     w("/* ---- calling convention / visibility ------------------------------------- */")
-    w("/* The engine surface is i386 cdecl (the default); ROTH_CDECL is a no-op there and")
-    w("   a placeholder for a future Windows/stdcall split. */")
+    w("/* The engine surface is i386 cdecl (the default); ROTH_CDECL pins that explicitly")
+    w("   on every toolchain that can express it (GCC/Clang attribute, MSVC __cdecl). */")
     w("#if defined(__i386__) && (defined(__GNUC__) || defined(__clang__))")
     w("#  define ROTH_CDECL __attribute__((__cdecl__))")
+    w("#elif defined(_M_IX86)")
+    w("#  define ROTH_CDECL __cdecl")
     w("#else")
     w("#  define ROTH_CDECL")
     w("#endif")
@@ -330,6 +439,30 @@ def gen_header(exposed, sigs, api):
         w(f"    {e['name']} = {e['value']},  /* {e['desc']} */")
     w(f"}} {ctx['enum_name']};")
     w("")
+    w("/* ---- frozen ABI layout region --------------------------------------------- */")
+    w("/* Every public struct below is plain i386 layout (all members are 2- or 4-byte scalars")
+    w("   or 4-byte pointers). pack(4) pins that layout explicitly on every compiler — a no-op")
+    w("   for the historical structs (verified by the generated abi_asserts.c compile gate). */")
+    w("#pragma pack(push, 4)")
+    w("")
+    res = api.get("results")
+    if res:
+        w("/* ---- result codes ---------------------------------------------------------- */")
+        if res.get("note"):
+            w(f"/* {res['note']} */")
+        w(f"typedef enum {res['enum_name']} {{")
+        for e in res["values"]:
+            w(f"    {e['name']} = {e['value']},  /* {e['desc']} */")
+        w(f"}} {res['enum_name']};")
+        w("")
+    for grp in api.get("abi_enums", []):
+        if grp.get("note"):
+            w(f"/* {grp['note']} */")
+        w("enum {")
+        for e in grp["values"]:
+            w(f"    {e['name']} = {e['value']},  /* {e['desc']} */")
+        w("};")
+        w("")
     w("/* ---- permanent function IDs (id == canonical 1996 VA) --------------------- */")
     w("/* Every OVERRIDABLE (eligible) engine function, so ROTH_FN_<fn> names any override target for")
     w("   roth_override(); the exposed engine-call table below is the subset callable through the api. */")
@@ -355,6 +488,31 @@ def gen_header(exposed, sigs, api):
         w("    " + _fnptr(a["ret"], a["params"], a["name"]) + f"  /* {a['desc']} */")
     w("};")
     w("")
+    abi_structs = _abi_structs(api)
+    if abi_structs:
+        w("/* ---- plain ABI structs (descriptors, events, state records) --------------- */")
+        for s in abi_structs:
+            if s.get("note"):
+                w(f"/* {s['struct_name']}: {s['note']} */")
+            w(f"struct {s['struct_name']} {{")
+            for f in s["fields"]:
+                t = f["type"]
+                sep = "" if t.endswith("*") else " "
+                w(f"    {t}{sep}{f['name']};" + (f"  /* {f['desc']} */" if f.get("desc") else ""))
+            w("};")
+        w("")
+    api_tables = _api_tables(api)
+    if api_tables:
+        w("/* ---- host-service sub-tables (reached through trailing roth_api_v1 pointers) ---- */")
+        w(f"struct {API_STRUCT};   /* fwd: the sub-table methods take it as their first argument */")
+        for t in api_tables:
+            if t.get("note"):
+                w(f"/* {t['struct_name']}: {t['note']} */")
+            w(f"struct {t['struct_name']} {{")
+            for m in t["members"]:
+                w("    " + _api_table_member_field(m))
+            w("};")
+        w("")
     w("/* ---- the host-provided API table (abi header first) ---------------------- */")
     w(f"struct {API_STRUCT} {{")
     w("    uint16_t abi_major;")
@@ -364,6 +522,9 @@ def gen_header(exposed, sigs, api):
     w(f"    const struct {GR_STRUCT} *game_ram;")
     for f in api.get("host_api", {}).get("fields", []):   # host services appended after game_ram (10)
         w("    " + _fnptr(f["ret"], f["params"], f["name"]) + (f"  /* {f['desc']} */" if f.get("desc") else ""))
+    for t in api_tables:   # NEW sub-table pointers appended after host services (append-only, forever)
+        w(f"    const struct {t['struct_name']} *{t['field_name']};"
+          + (f"  /* {t['field_desc']} */" if t.get("field_desc") else ""))
     w("};")
     w("")
     w("/* ---- context-tagged lifecycle callbacks ---------------------------------- */")
@@ -392,6 +553,8 @@ def gen_header(exposed, sigs, api):
     w('#include "roth_sdk_overrides.h"   /* GENERATED per-function typedefs + roth_next_<fn> thunks */')
     w("")
     _gen_plugin_header(w, api)
+    w("#pragma pack(pop)   /* end of the frozen ABI layout region */")
+    w("")
     w("/* ---- convenience call macros (call an exposed engine fn through the table) - */")
     for r in exposed:
         w(f"#define ROTH_CALL_{r['name']}(api, ...) ((api)->engine->{r['name']}(__VA_ARGS__))")
@@ -404,7 +567,8 @@ def gen_header(exposed, sigs, api):
 
 
 # ------------------------------------------------------------ descriptor ------
-def gen_descriptor(exposed, api):
+def build_descriptor(exposed, api):
+    """The descriptor as a dict (single source for the JSON artifact AND abi_asserts.c)."""
     v = api["version"]
     gr = api["game_ram"]
     ctx = api["contexts"]
@@ -443,12 +607,22 @@ def gen_descriptor(exposed, api):
     for f in api.get("host_api", {}).get("fields", []):   # host services appended after game_ram
         api_fields.append({"name": f["name"], "offset": api_size, "size": PTR, "kind": "fnptr"})
         api_size += PTR
+    for t in _api_tables(api):   # NEW sub-table pointers appended after host services
+        api_fields.append({"name": t["field_name"], "offset": api_size, "size": PTR, "kind": "ptr",
+                           "points_to": t["struct_name"]})
+        api_size += PTR
 
     structs = {
         API_STRUCT: {"size": api_size, "fields": api_fields},
         ENGINE_STRUCT: {"size": engine_size, "fields": engine_fields},
         GR_STRUCT: {"size": gr_size, "fields": gr_fields},
     }
+    for t in _api_tables(api):   # each sub-struct tracked so abi-probe verifies its layout
+        rows, size = _api_table_layout(t["members"])
+        structs[t["struct_name"]] = {"size": size, "fields": rows}
+    for s in _abi_structs(api):  # plain ABI structs (descriptors/events/state) tracked the same way
+        rows, size = _abi_struct_layout(s["fields"])
+        structs[s["struct_name"]] = {"size": size, "fields": rows}
     # the SDK-neutral int33 mouse-poll view (on_mouse_poll param) — tracked so abi-probe verifies it.
     mp = api.get("mouse_poll")
     if mp:
@@ -475,7 +649,7 @@ def gen_descriptor(exposed, api):
             {"name": "api", "offset": 16, "size": PTR, "kind": "ptr", "points_to": API_STRUCT},
         ]}
 
-    desc = {
+    return {
         "schema": "roth-sdk/abi_descriptor/v1",
         "note": ("Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot "
                  "order, and signature ids. tools/sdk_check.py diffs this against "
@@ -489,7 +663,10 @@ def gen_descriptor(exposed, api):
         "game_ram_table": gr_fields,
         "contexts": ctx["values"],
     }
-    return json.dumps(desc, indent=1) + "\n"
+
+
+def gen_descriptor(exposed, api):
+    return json.dumps(build_descriptor(exposed, api), indent=1) + "\n"
 
 
 # ------------------------------------------------------- host adapters --------
@@ -585,6 +762,21 @@ def gen_adapters(exposed, api):
             types = ", ".join(p["type"] for p in f.get("params", [])) or "void"
             w(f"extern {ret}{star}{f['host_symbol']}({types});")
         w("")
+    api_tables = _api_tables(api)
+    for t in api_tables:
+        w(f"/* {t['struct_name']}: host implementations provided by the game's platform layer (extern here;")
+        w(" * the standalone -c ABI proof leaves them unresolved — the game link binds the platform TU). */")
+        for m in t["members"]:
+            if m.get("ret") is not None:
+                w(_extern_host_decl(m["ret"], m.get("params", []), m["host_symbol"]))
+        w(f"static const struct {t['struct_name']} {t['field_name'].upper()} = {{")
+        for m in t["members"]:
+            if m.get("ret") is None:      # the leading struct_size scalar
+                w(f"    .{m['name']} = (uint32_t)sizeof(struct {t['struct_name']}),")
+            else:
+                w(f"    .{m['name']} = {m['host_symbol']},")
+        w("};")
+        w("")
     w(f"ROTH_SDK_EXPORT const struct {API_STRUCT} {HOST_TABLE} = {{")
     w("    .abi_major = ROTH_ABI_MAJOR,")
     w("    .abi_minor = ROTH_ABI_MINOR,")
@@ -593,6 +785,8 @@ def gen_adapters(exposed, api):
     w("    .game_ram = &GR,")
     for f in host_fields:
         w(f"    .{f['name']} = {f['host_symbol']},")
+    for t in api_tables:
+        w(f"    .{t['field_name']} = &{t['field_name'].upper()},")
     w("};")
     return "\n".join(L) + "\n"
 
@@ -602,11 +796,13 @@ def render():
     both the writer and the CI drift check)."""
     exposed, api = load()
     sigs = load_override_sigs()
+    desc = build_descriptor(exposed, api)
     return {
         HDR: gen_header(exposed, sigs, api),
         OVR_HDR: gen_overrides_header(sigs),
-        DESC: gen_descriptor(exposed, api),
+        DESC: json.dumps(desc, indent=1) + "\n",
         ADAPTERS: gen_adapters(exposed, api),
+        ASSERTS: gen_asserts(desc),
     }, exposed
 
 

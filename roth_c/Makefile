@@ -218,8 +218,9 @@ STANDALONE_HOST_OBJS := $(PLATFORM_OBJS) $(PLATFORM_OS_OBJS) $(STANDALONE_ONLY_O
 
 # the runtime PLUGIN platform — standalone-only by linkage.
 # plugin_loader.o = the dlopen/validate/lifecycle state machine; host_adapters.o = the GENERATED
-# host API table (sdk/generated/host_adapters.c) filled against the real engine + game_ram.
-PLUGIN_OBJS := $(BUILD)/plugin_loader.o $(BUILD)/host_adapters.o
+# host API table (sdk/generated/host_adapters.c) filled against the real engine + game_ram;
+# present_channel.o = the host side of the RGBA present channel + present pacing + window control.
+PLUGIN_OBJS := $(BUILD)/plugin_loader.o $(BUILD)/host_adapters.o $(BUILD)/present_channel.o
 
 # the boot-time OVERRIDE REGISTRY — standalone only.
 # override_registry.o = the chain builder + boot-time entry patcher; override_gen.o = the GENERATED
@@ -450,8 +451,9 @@ $(BUILD)/main_if.o: $(PLATFORM)/main.c $(PLATFORM)/sdl/sdl_host.h | $(BUILD)
 	$(CC) $(MAINIF_CFLAGS) -c -o $@ $<
 # the in-process SDL3 window (native SDL3; ROTH_STANDALONE + the SDL3 include path). Linked ONLY
 # into the roth game binary — the differential trap host never compiles or links this TU.
-$(BUILD)/sdl_host.o: $(PLATFORM)/sdl/sdl_host.c $(PLATFORM)/sdl/sdl_host.h $(PLATFORM)/sdl/sdl_audio.h $(PLATFORM)/shared_fb.h | $(BUILD)
-	$(CC) $(STANDALONE_CFLAGS) -I$(SDL3_INC) -c -o $@ $<
+$(BUILD)/sdl_host.o: $(PLATFORM)/sdl/sdl_host.c $(PLATFORM)/sdl/sdl_host.h $(PLATFORM)/sdl/sdl_audio.h \
+                     $(PLATFORM)/shared_fb.h $(PLATFORM)/present_channel.h $(SDK_INC)/roth_sdk.h | $(BUILD)
+	$(CC) $(STANDALONE_CFLAGS) -I$(SDL3_INC) -I$(SDK_INC) -c -o $@ $<
 # the in-process SDL3 audio consumer (PCM ring drain + MIDI->TSF), native SDL3. Full warnings.
 $(BUILD)/sdl_audio.o: $(PLATFORM)/sdl/sdl_audio.c $(PLATFORM)/sdl/sdl_audio.h $(PLATFORM)/viewer/tsf.h \
                       $(PLATFORM)/shared_audio.h $(PLATFORM)/shared_midi.h | $(BUILD)
@@ -504,6 +506,13 @@ $(BUILD)/plugin_loader.o: $(PLATFORM)/plugin_loader.c $(PLATFORM)/plugin_loader.
 # Compiled straight from sdk/generated/ — never hand-edited. It provides roth_host_api_v1 + the
 # game_ram accessors (roth_game_ram_base/size are defined by plugin_loader.o).
 $(BUILD)/host_adapters.o: $(SDK_DIR)/generated/host_adapters.c $(SDK_INC)/roth_sdk.h $(ENGINE)/engine.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(SDK_INC) -c -o $@ $<
+# present_channel.c: the host side of the roth_present_v1 / roth_window_v1 SDK sub-tables + the
+# on_present_pace timing. Portable C (no SDL, no engine headers); the SDL present thread drives it.
+# Provides the roth_present_* / roth_window_* symbols host_adapters.o binds. Plain CFLAGS + the SDK
+# header (for struct roth_api_v1), like plugin_loader.o.
+$(BUILD)/present_channel.o: $(PLATFORM)/present_channel.c $(PLATFORM)/present_channel.h \
+                            $(SDK_INC)/roth_sdk.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(SDK_INC) -c -o $@ $<
 
 # --- the override registry — standalone only ---

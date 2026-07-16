@@ -355,6 +355,18 @@ def gate_compile():
             msgs.append("host_adapters.c failed to compile:\n" + r.stderr.strip())
         else:
             msgs.append("host_adapters.c compiled (engine.h ABI proof holds)")
+        # abi_asserts.c -c  (the compile-time layout proof: _Static_assert of every public
+        # struct's size and every field's offset/size against the descriptor — a moved frozen
+        # offset refuses to compile, no runtime needed)
+        aobj = os.path.join(td, "abi_asserts.o")
+        r = subprocess.run(["gcc", *CFLAGS, "-c", *INCS, GEN.ASSERTS, "-o", aobj],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            ok = False
+            msgs.append("abi_asserts.c failed to compile (a public struct layout moved):\n"
+                        + r.stderr.strip())
+        else:
+            msgs.append("abi_asserts.c compiled (static layout assertions hold)")
     return "compile", ok, msgs
 
 

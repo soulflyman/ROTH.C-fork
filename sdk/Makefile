@@ -7,7 +7,7 @@
 #                         exposure-order, compile, abi-probe, override-validate) —
 #                         the gate the parent CI should call
 #   make -C sdk gen       regenerate functions.json / roth_sdk.h / descriptor.json /
-#                         host_adapters.c from the schemas
+#                         host_adapters.c / abi_asserts.c from the schemas
 #   make -C sdk seed-ids  (maintenance) re-seed function_ids.json from corpus+engine.h;
 #                         appends new rename aliases — review the diff before committing
 #   make -C sdk release   copy the current descriptor + id table into a new

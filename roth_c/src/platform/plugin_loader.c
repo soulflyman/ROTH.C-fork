@@ -24,6 +24,8 @@
 #include "engine.h"             /* regs_t, g_os_soft_int (the int33 seam we chain for on_frame_game) */
 #include "standalone_hooks.h"   /* host_soft_int (the real body g_os_soft_int points at) */
 #include "sys/sys.h"            /* per-OS seam: shared-object loading, directory enumeration, soname */
+#include "shared_fb.h"          /* g_shm: the published cur_w/cur_h + DAC palette watched for notifications */
+#include "present_channel.h"    /* per-plugin world-channel ownership release on unload */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -41,6 +43,7 @@ uint8_t  *roth_game_ram_base;
 uint32_t  roth_game_ram_size;
 
 extern const struct roth_api_v1 roth_host_api_v1;   /* the immutable host API table (host_adapters.c) */
+extern struct roth_shm *g_shm;                      /* the published framebuffer/palette (main.c) */
 
 #define PL_MAX     64
 #define PL_ID_MAX  160
@@ -49,12 +52,18 @@ extern const struct roth_api_v1 roth_host_api_v1;   /* the immutable host API ta
 typedef struct {
     void *handle;                              /* dlopen handle (retained to process exit) */
     const struct roth_plugin_info_v1 *info;    /* the plugin's static, immutable info struct */
+    struct roth_api_v1 api;                    /* stable per-plugin table address (channel identity) */
     char id[PL_ID_MAX];                        /* copied reverse-DNS id (duplicate detection) */
     char dir[PL_DIR_MAX];                      /* the plugin's own folder (mods/<name>/) for cfg/assets */
+    uint8_t saw_map_event;
+    uint8_t saw_palette_event;
+    uint8_t saw_video_event;
 } pl_slot_t;
 
 static pl_slot_t g_pl[PL_MAX];
 static int       g_npl;
+
+static const struct roth_api_v1 *plugin_api(int i) { return &g_pl[i].api; }
 
 /* The directory of the plugin whose MAIN lifecycle callback is currently running — what
  * api->plugin_dir() returns (task #103, SDK 0.4). Set around each single-threaded MAIN dispatch
@@ -84,6 +93,11 @@ void plugins_configure(int no_mods, int strict, int list, int dump)
 }
 int plugins_list_mode(void)   { return g_opt_list; }
 int plugins_nomods_flag(void) { return g_opt_no_mods; }
+
+/* Non-zero once at least one plugin is loaded. The present thread uses it to keep the present loop
+ * byte-for-byte the engine-only path when no plugin is loaded (no present-pace dispatch, no window
+ * polling, no channel acquire) — the zero-plugins-no-behavior-change invariant, timing included. */
+int plugins_any_loaded(void)  { return g_npl > 0; }
 
 static int plugins_disabled(void)
 {
@@ -163,7 +177,7 @@ static void load_one(const char *path)
     sys_dlerror();
     /* The single versioned export is authoritative; a mod.toml beside the shared object is packaging
      * metadata only and v1 ignores it entirely. */
-    union { void *p; const struct roth_plugin_info_v1 *(*fn)(void); } q;
+    union { void *p; roth_plugin_query_v1_fn fn; } q;
     q.p = sys_dlsym(h, "roth_plugin_query_v1");
     const char *err = sys_dlerror();
     if (err || !q.p) {
@@ -182,6 +196,7 @@ static void load_one(const char *path)
     pl_slot_t *s = &g_pl[g_npl++];
     s->handle = h;
     s->info   = info;
+    s->api    = roth_host_api_v1;
     snprintf(s->id, sizeof s->id, "%s", info->id);
     /* the plugin's own folder = dirname(path) (mods/<name>/) — api->plugin_dir() during MAIN. */
     snprintf(s->dir, sizeof s->dir, "%s", path);
@@ -265,10 +280,136 @@ static void report(void)
         ADD(on_register_overrides, "overrides");
         ADD(on_scancode, "scancode");
         ADD(on_mouse_poll, "mouse_poll");
+        ADD(on_map_loaded, "map_loaded");
+        ADD(on_palette_changed, "palette_changed");
+        ADD(on_video_mode_changed, "video_mode_changed");
+        ADD(on_present_pace, "present_pace");
         #undef ADD
         LOGE("[plugins]   #%d %s v%s (%s) abi=%u.%u api_use=0x%x callbacks=[%s]\n", i,
              in->id, in->version ? in->version : "?", in->name ? in->name : "?",
              in->abi_major, in->abi_minor, in->api_use, cb[0] ? cb : "none");
+    }
+}
+
+/* --------------------------------------------------- GAME-context notifications --- */
+/* on_map_loaded / on_palette_changed / on_video_mode_changed are raised from the same GAME-thread
+ * frame pump as on_frame_game (engine calls are legal for the plugin), by watching host-observable
+ * engine/framebuffer state for transitions each pumped tick. No engine edits — read-only probes. */
+
+/* "A new map is staged and renderable." The engine clears g_render_active (0x89f38) at the top of the
+ * map loader (load_raw_map_file) and sets it to 0xff at the first world render of the map; the map's
+ * geometry allocation base (g_map_geometry_buffer 0x90aa8) is replaced per map. We announce once when
+ * rendering resumes after a load (either signal re-arms us) — so it fires after the geometry/textures/
+ * palette are staged and at the first world frame, and once for the first map after boot. */
+static int      g_map_announced;
+static uint32_t g_last_geom_base;
+static uint32_t g_pal_sum;          /* cheap checksum of the published DAC palette */
+static int      g_pal_primed;
+static uint32_t g_last_cur_w, g_last_cur_h;
+static int      g_mode_primed;
+static uint32_t g_map_generation;
+static uint32_t g_palette_generation;
+static uint32_t g_video_generation;
+
+static void dispatch_map_loaded(void)
+{
+    struct roth_map_event_v1 event = {
+        (uint32_t)sizeof(event), ++g_map_generation, 0
+    };
+    for (int i = 0; i < g_npl; i++) {
+        if (PL_HAS(g_pl[i].info, on_map_loaded) && g_pl[i].info->on_map_loaded) {
+            event.flags = g_pl[i].saw_map_event ? 0u : ROTH_EVENT_INITIAL;
+            g_pl[i].saw_map_event = 1;
+            g_pl[i].info->on_map_loaded(plugin_api(i), &event);
+        }
+    }
+}
+static void dispatch_palette_changed(void)
+{
+    struct roth_palette_event_v1 event = {
+        (uint32_t)sizeof(event), ++g_palette_generation, 0
+    };
+    for (int i = 0; i < g_npl; i++) {
+        if (PL_HAS(g_pl[i].info, on_palette_changed) && g_pl[i].info->on_palette_changed) {
+            event.flags = g_pl[i].saw_palette_event ? 0u : ROTH_EVENT_INITIAL;
+            g_pl[i].saw_palette_event = 1;
+            g_pl[i].info->on_palette_changed(plugin_api(i), &event);
+        }
+    }
+}
+static void dispatch_video_mode_changed(uint32_t pixel_w, uint32_t pixel_h,
+                                        uint32_t aspect_w, uint32_t aspect_h)
+{
+    struct roth_video_event_v1 event = {
+        (uint32_t)sizeof(event), ++g_video_generation, 0,
+        pixel_w, pixel_h, aspect_w, aspect_h
+    };
+    for (int i = 0; i < g_npl; i++) {
+        if (PL_HAS(g_pl[i].info, on_video_mode_changed) && g_pl[i].info->on_video_mode_changed) {
+            event.flags = g_pl[i].saw_video_event ? 0u : ROTH_EVENT_INITIAL;
+            g_pl[i].saw_video_event = 1;
+            g_pl[i].info->on_video_mode_changed(plugin_api(i), &event);
+        }
+    }
+}
+
+/* Any plugin subscribed to a GAME-context notification (they ride the same per-tick pump). */
+static int any_notify_wanted(void)
+{
+    for (int i = 0; i < g_npl; i++) {
+        const struct roth_plugin_info_v1 *in = g_pl[i].info;
+        if ((PL_HAS(in, on_map_loaded)        && in->on_map_loaded) ||
+            (PL_HAS(in, on_palette_changed)   && in->on_palette_changed) ||
+            (PL_HAS(in, on_video_mode_changed) && in->on_video_mode_changed))
+            return 1;
+    }
+    return 0;
+}
+
+/* Detect + dispatch the three GAME-context notifications. Runs once per engine tick from the pump. */
+static void notify_check(void)
+{
+    /* map load: g_render_active edge (0 while loading -> 0xff at first render) + geometry base change */
+    uint8_t  ra   = *(volatile uint8_t  *)(uintptr_t)(0x89f38u + OBJ_DELTA);   /* g_render_active */
+    uint32_t geom = *(volatile uint32_t *)(uintptr_t)(0x90aa8u + OBJ_DELTA);   /* g_map_geometry_buffer */
+    if (ra == 0)                       g_map_announced = 0;   /* a load is in progress -> re-arm */
+    if (geom != g_last_geom_base) {    g_map_announced = 0; g_last_geom_base = geom; }
+    if (ra != 0 && !g_map_announced) { g_map_announced = 1; dispatch_map_loaded(); }
+
+    if (g_shm) {
+        /* palette: a cheap checksum of the published 6-bit DAC palette. Fades mutate it continuously,
+         * so bursts during a fade are expected + documented (heavy consumers debounce). */
+        uint32_t sum = 2166136261u;
+        for (int i = 0; i < 768; i++) { sum ^= g_shm->palette[i]; sum *= 16777619u; }
+        if (!g_pal_primed) {
+            g_pal_primed = 1;
+            g_pal_sum = sum;
+            dispatch_palette_changed();
+        }
+        else if (sum != g_pal_sum) { g_pal_sum = sum; dispatch_palette_changed(); }
+
+        /* Video changes are detected by the published pixel dimensions. The event also snapshots
+         * the logical aspect dimensions consumed by the host's present path. */
+        uint32_t raw_w = g_shm->cur_w, raw_h = g_shm->cur_h;
+        uint32_t w = raw_w, h = raw_h;
+        if (w == 0 || w > ROTH_FB_MAXW) w = ROTH_FB_W;
+        if (h == 0 || h > ROTH_FB_MAXH) h = ROTH_FB_H;
+        uint32_t aw = g_shm->aspect_w, ah = g_shm->aspect_h;
+        if (aw == 0 || aw > ROTH_FB_MAXW || ah == 0 || ah > ROTH_FB_MAXH) {
+            aw = w;
+            ah = h;
+        }
+        if (!g_mode_primed) {
+            g_mode_primed = 1;
+            g_last_cur_w = raw_w;
+            g_last_cur_h = raw_h;
+            dispatch_video_mode_changed(w, h, aw, ah);
+        }
+        else if (raw_w != g_last_cur_w || raw_h != g_last_cur_h) {
+            g_last_cur_w = raw_w;
+            g_last_cur_h = raw_h;
+            dispatch_video_mode_changed(w, h, aw, ah);
+        }
     }
 }
 
@@ -286,9 +427,19 @@ static void frame_pump(void)
     if (now == g_last_frame_tick)
         return;
     g_last_frame_tick = now;
+    notify_check();                             /* map_loaded / palette_changed / video_mode_changed */
     for (int i = 0; i < g_npl; i++)
         if (PL_HAS(g_pl[i].info, on_frame_game) && g_pl[i].info->on_frame_game)
-            g_pl[i].info->on_frame_game(&roth_host_api_v1);
+            g_pl[i].info->on_frame_game(plugin_api(i));
+}
+
+/* on_present_pace(PRESENT): dispatched once per present-loop iteration immediately before the host
+ * presents. The timing snapshot is shared read-only by every interested plugin in that iteration. */
+void plugins_dispatch_present_pace(const struct roth_present_timing_v1 *timing)
+{
+    for (int i = 0; i < g_npl; i++)
+        if (PL_HAS(g_pl[i].info, on_present_pace) && g_pl[i].info->on_present_pace)
+            g_pl[i].info->on_present_pace(plugin_api(i), timing);
 }
 
 /* on_mouse_poll(GAME): the int33 mouse seam (SDK 0.4). Fires on the game thread after the real
@@ -304,7 +455,7 @@ static void dispatch_mouse_poll(uint16_t ax_in, regs_t *io)
     int any = 0;
     for (int i = 0; i < g_npl; i++)
         if (PL_HAS(g_pl[i].info, on_mouse_poll) && g_pl[i].info->on_mouse_poll) {
-            g_pl[i].info->on_mouse_poll(&roth_host_api_v1, &mp);
+            g_pl[i].info->on_mouse_poll(plugin_api(i), &mp);
             any = 1;
         }
     if (any) { io->ebx = mp.ebx; io->ecx = mp.ecx; io->edx = mp.edx; }
@@ -321,14 +472,15 @@ static uint32_t frame_relay(uint8_t vec, regs_t *io)
     return r;
 }
 
-/* Both int33-riding seams (on_frame_game + on_mouse_poll) install the SAME g_os_soft_int chain. */
+/* The int33-riding pump serves on_frame_game + on_mouse_poll AND the GAME-context notifications
+ * (which need the per-tick pump to detect transitions), so install it if any of them is wanted. */
 static int any_int33_seam_wanted(void)
 {
     for (int i = 0; i < g_npl; i++)
         if ((PL_HAS(g_pl[i].info, on_frame_game) && g_pl[i].info->on_frame_game) ||
             (PL_HAS(g_pl[i].info, on_mouse_poll) && g_pl[i].info->on_mouse_poll))
             return 1;
-    return 0;
+    return any_notify_wanted();
 }
 
 static void install_frame_seam(void)
@@ -377,7 +529,7 @@ void plugins_load(const char *game_dir)
     for (int i = 0; i < g_npl; i++)
         if (PL_HAS(g_pl[i].info, on_load) && g_pl[i].info->on_load) {
             g_cur_dispatch_dir = g_pl[i].dir;           /* api->plugin_dir() valid inside the callback */
-            g_pl[i].info->on_load(&roth_host_api_v1);
+            g_pl[i].info->on_load(plugin_api(i));
             g_cur_dispatch_dir = NULL;
         }
     install_frame_seam();
@@ -388,7 +540,7 @@ void plugins_dispatch_game_ram_ready(void)
     for (int i = 0; i < g_npl; i++)             /* g_npl==0 when disabled -> no-op */
         if (PL_HAS(g_pl[i].info, on_game_ram_ready) && g_pl[i].info->on_game_ram_ready) {
             g_cur_dispatch_dir = g_pl[i].dir;
-            g_pl[i].info->on_game_ram_ready(&roth_host_api_v1);
+            g_pl[i].info->on_game_ram_ready(plugin_api(i));
             g_cur_dispatch_dir = NULL;
         }
 }
@@ -397,7 +549,7 @@ void plugins_dispatch_compose_tick(uint8_t *pixels, uint32_t width, uint32_t hei
 {
     for (int i = 0; i < g_npl; i++)
         if (PL_HAS(g_pl[i].info, on_compose_tick) && g_pl[i].info->on_compose_tick)
-            g_pl[i].info->on_compose_tick(&roth_host_api_v1, pixels, width, height);
+            g_pl[i].info->on_compose_tick(plugin_api(i), pixels, width, height);
 }
 
 /* on_scancode(TICK_ISR): the input seam, called from iso_apply_scancode (traps.c) — the plugin
@@ -409,7 +561,7 @@ uint8_t plugins_dispatch_scancode(uint8_t sc)
 {
     for (int i = 0; i < g_npl; i++)
         if (PL_HAS(g_pl[i].info, on_scancode) && g_pl[i].info->on_scancode) {
-            sc = g_pl[i].info->on_scancode(&roth_host_api_v1, sc);
+            sc = g_pl[i].info->on_scancode(plugin_api(i), sc);
             if (sc == 0)
                 return 0;                        /* swallowed — no further plugin sees it */
         }
@@ -427,7 +579,7 @@ void plugins_apply_overrides(void)
         if (PL_HAS(g_pl[i].info, on_register_overrides) && g_pl[i].info->on_register_overrides) {
             overrides_begin_plugin(i, g_pl[i].id);
             g_cur_dispatch_dir = g_pl[i].dir;
-            g_pl[i].info->on_register_overrides(&roth_host_api_v1, overrides_registrar());
+            g_pl[i].info->on_register_overrides(plugin_api(i), overrides_registrar());
             g_cur_dispatch_dir = NULL;
         }
     }
@@ -438,11 +590,13 @@ void plugins_apply_overrides(void)
 
 void plugins_dispatch_unload(void)
 {
-    for (int i = g_npl - 1; i >= 0; i--)        /* reverse load order */
+    for (int i = g_npl - 1; i >= 0; i--) {      /* reverse load order */
         if (PL_HAS(g_pl[i].info, on_unload) && g_pl[i].info->on_unload) {
             g_cur_dispatch_dir = g_pl[i].dir;
-            g_pl[i].info->on_unload(&roth_host_api_v1);
+            g_pl[i].info->on_unload(plugin_api(i));
             g_cur_dispatch_dir = NULL;
         }
+        roth_present_release_owner(plugin_api(i));
+    }
     /* v1: NO dlclose of accepted plugins — handles retained to process exit (§10.3 / finding 3). */
 }
