@@ -224,7 +224,9 @@ composes with synchronization so the slower limit wins. For an fps UI, use
 
 `get_display_mode_count` and `get_display_mode` expose an informational snapshot of the window's
 current display, refreshed when the window changes display. Refresh rates are millihertz. The list
-is for settings UIs; this API does not set a display mode.
+is for settings UIs; this API does not set a display mode. Note the snapshot is published by the
+window's own thread, which starts after plugin load — a count of 0 during `on_load` is normal;
+query the list after your first video event instead.
 
 **Forward compatibility.** `api->present` and `api->window` are `NULL` on a host older than the
 minor that introduced them, and each carries a leading `struct_size` so you can feature-detect a
