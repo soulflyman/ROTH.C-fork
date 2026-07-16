@@ -217,6 +217,7 @@ int sdl_present_run(int scale)
         return -1;
     }
     SDL_SetRenderVSync(ren, 1);   /* replaces SDL2's PRESENTVSYNC flag; paces the loop to the display */
+    fprintf(stderr, "[sdl] renderer backend: %s\n", SDL_GetRendererName(ren));
 
     int cur_tex_w = ROTH_FB_W, cur_tex_h = ROTH_FB_H;
     int cur_log_w = ROTH_FB_W, cur_log_h = ROTH_FB_H;
