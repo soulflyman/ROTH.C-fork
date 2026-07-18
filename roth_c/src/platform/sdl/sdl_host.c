@@ -416,7 +416,9 @@ int sdl_present_run(int scale)
             if (wtex) SDL_DestroyTexture(wtex);
             wtex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
                                      SDL_TEXTUREACCESS_STREAMING, (int)wf.w, (int)wf.h);
-            if (wtex) SDL_SetTextureScaleMode(wtex, SDL_SCALEMODE_LINEAR);
+            /* Nearest matches the engine texture: linear blurred the world
+             * layer against the crisp 8bpp chrome at any window scale. */
+            if (wtex) SDL_SetTextureScaleMode(wtex, SDL_SCALEMODE_NEAREST);
             wtex_w = (int)wf.w;
             wtex_h = (int)wf.h;
         }
