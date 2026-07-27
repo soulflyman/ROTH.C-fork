@@ -468,6 +468,10 @@ static uint32_t frame_relay(uint8_t vec, regs_t *io)
     if (vec == 0x33) {                          /* mouse poll: game-thread, per-frame chokepoint */
         dispatch_mouse_poll(ax_in, io);         /* on_mouse_poll(GAME): per-poll, engine calls legal */
         frame_pump();                           /* on_frame_game(GAME): deduped on the 0x90bcc tick */
+        /* A Windows timer fire that found this thread inside plugin/driver code
+         * is queued for safety. We are now back at a known game-thread host
+         * boundary, so deliver it without waiting for a lucky timer sample. */
+        sys_tick_safe_point();
     }
     return r;
 }

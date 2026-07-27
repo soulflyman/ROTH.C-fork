@@ -36,6 +36,17 @@ void sys_tick_set_period(unsigned period_us);
 /* Stop the tick (clean teardown). */
 void sys_tick_stop(void);
 
+/* A plugin callback can keep the Windows game thread inside DLL/driver code
+ * across several timer fires. The Windows timer queues those fires rather than
+ * redirecting arbitrary DLL code; call this at a known game-thread host boundary
+ * to drain the queue immediately. Other platforms deliver their tick directly,
+ * so the boundary is a compile-time no-op there. */
+#if defined(_WIN32)
+void sys_tick_safe_point(void);
+#else
+static inline void sys_tick_safe_point(void) {}
+#endif
+
 /* ---- the game thread ---------------------------------------------------------
  * The game runs on its own thread while the main thread owns the window/present
  * loop. The tick preempts the game thread cooperatively, exactly as the original

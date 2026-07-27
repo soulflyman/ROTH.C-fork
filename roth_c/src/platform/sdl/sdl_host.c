@@ -45,6 +45,45 @@ int  plugins_any_loaded(void);                     /* plugin_loader.c */
  * as viewer.c <-> host over shm today. */
 extern struct roth_shm *g_shm;
 
+struct sdl_cursor_snapshot {
+    int32_t x, y;
+    int32_t mouse_x, mouse_y;
+    int32_t hotspot_x, hotspot_y;
+    uint32_t w, h, visible;
+    uint8_t pixels[ROTH_CURSOR_MAX];
+};
+
+static int read_cursor_snapshot(struct sdl_cursor_snapshot *out)
+{
+    int tries;
+    if (out == NULL || g_shm == NULL)
+        return 0;
+
+    for (tries = 0; tries < 3; tries++) {
+        uint32_t seq0 = __atomic_load_n(&g_shm->cursor_seq, __ATOMIC_ACQUIRE);
+        uint32_t seq1;
+        if (seq0 & 1u)
+            continue;
+        out->x = g_shm->cursor_x;
+        out->y = g_shm->cursor_y;
+        out->mouse_x = g_shm->cursor_mouse_x;
+        out->mouse_y = g_shm->cursor_mouse_y;
+        out->hotspot_x = g_shm->cursor_hotspot_x;
+        out->hotspot_y = g_shm->cursor_hotspot_y;
+        out->w = g_shm->cursor_w;
+        out->h = g_shm->cursor_h;
+        out->visible = g_shm->cursor_visible;
+        for (uint32_t i = 0; i < ROTH_CURSOR_MAX; i++)
+            out->pixels[i] = g_shm->cursor_pixels[i];
+        seq1 = __atomic_load_n(&g_shm->cursor_seq, __ATOMIC_ACQUIRE);
+        if (seq0 == seq1 && !(seq1 & 1u))
+            return out->visible &&
+                   out->w > 0 && out->w <= ROTH_CURSOR_MAX_W &&
+                   out->h > 0 && out->h <= ROTH_CURSOR_MAX_H;
+    }
+    return 0;
+}
+
 /* SDL_Scancode -> PC set-1 make code. 0 = unmapped. Extended keys carry a 0xE0 prefix flag in the
  * high byte (0x100). Carried over VERBATIM from viewer.c:29-85 — the SDL_SCANCODE_* enum is stable
  * across SDL2->SDL3 (design §2.7). */
@@ -271,6 +310,7 @@ int sdl_present_run(int scale)
      * when the published dimensions change. NULL until a plugin publishes a world frame, so until then
      * the draw path below is exactly the engine-only path (bit-identical to a build with no channel). */
     SDL_Texture *wtex = NULL;
+    SDL_Texture *ctex = NULL;
     int wtex_w = 0, wtex_h = 0;
     /* Applied window state is owned here with the SDL objects and mirrored through a seqlock. */
     uint32_t cur_window_mode = ROTH_WINMODE_WINDOWED;
@@ -398,11 +438,6 @@ int sdl_present_run(int scale)
             SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
             cur_tex_w = w; cur_tex_h = h;
         }
-        if (aw != cur_log_w || ah != cur_log_h) {
-            SDL_SetRenderLogicalPresentation(ren, aw, ah, SDL_LOGICAL_PRESENTATION_LETTERBOX);
-            cur_log_w = aw; cur_log_h = ah;
-        }
-
 #ifndef ROTH_VANILLA
         if (mods_on)
             roth_present_set_engine_dimensions((uint32_t)w, (uint32_t)h);
@@ -416,8 +451,8 @@ int sdl_present_run(int scale)
             if (wtex) SDL_DestroyTexture(wtex);
             wtex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
                                      SDL_TEXTUREACCESS_STREAMING, (int)wf.w, (int)wf.h);
-            /* Nearest matches the engine texture: linear blurred the world
-             * layer against the crisp 8bpp chrome at any window scale. */
+            /* Nearest-neighbour to preserve pixel-exact parity with the software
+             * renderer; the engine's own 8bpp frame is presented NEAREST too. */
             if (wtex) SDL_SetTextureScaleMode(wtex, SDL_SCALEMODE_NEAREST);
             wtex_w = (int)wf.w;
             wtex_h = (int)wf.h;
@@ -426,9 +461,30 @@ int sdl_present_run(int scale)
             world_ready = 0;   /* keep the engine frame opaque if the auxiliary texture failed */
 #endif
 
+        int logical_w = aw, logical_h = ah;
+#ifndef ROTH_VANILLA
+        if (world_ready &&
+            wf.composite_mode == ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS) {
+            logical_w = (int)wf.w;
+            logical_h = (int)wf.h;
+        }
+#endif
+        if (logical_w != cur_log_w || logical_h != cur_log_h) {
+            SDL_SetRenderLogicalPresentation(ren, logical_w, logical_h,
+                                             SDL_LOGICAL_PRESENTATION_LETTERBOX);
+            cur_log_w = logical_w; cur_log_h = logical_h;
+        }
+#ifndef ROTH_VANILLA
+        roth_present_set_separate_cursor(
+            world_ready &&
+            wf.composite_mode == ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS);
+#endif
+
         /* Palette (6-bit VGA DAC) -> ARGB8888 under the frame guard. Inside an active viewport,
-         * colorkey mode clears alpha only for the submitted palette index and world-only mode clears
-         * it for every engine pixel. Outside the viewport the engine frame stays opaque. */
+         * engine-over-world modes reveal the submitted world where the engine pixel still equals
+         * its optional baseline, or where it equals the legacy colorkey when no baseline exists.
+         * World-only mode reveals every engine pixel. Outside the viewport the engine stays
+         * opaque. */
         int n = w * h;
         int tries = 0;
         uint32_t f0, f1;
@@ -436,19 +492,43 @@ int sdl_present_run(int scale)
             f0 = rd_frame();
 #ifndef ROTH_VANILLA
             if (world_ready) {
+                const uint8_t *engine_pixels = g_shm->pixels;
+                const uint8_t *engine_palette = g_shm->palette;
+                int paired_engine =
+                    wf.paired_engine_pixels != NULL &&
+                    wf.paired_engine_palette != NULL &&
+                    wf.paired_engine_w == (uint32_t)w &&
+                    wf.paired_engine_h == (uint32_t)h &&
+                    roth_present_engine_frame_published() <
+                        wf.paired_engine_serial;
+                if (paired_engine) {
+                    engine_pixels = wf.paired_engine_pixels;
+                    engine_palette = wf.paired_engine_palette;
+                }
                 int vx = wf.vw ? wf.vx : 0, vy = wf.vh ? wf.vy : 0;
                 int vr = wf.vw ? (wf.vx + (int)wf.vw) : w;
                 int vb = wf.vh ? (wf.vy + (int)wf.vh) : h;
                 for (int i = 0; i < n; i++) {
-                    uint8_t idx = g_shm->pixels[i];
-                    uint8_t r = g_shm->palette[idx * 3 + 0] << 2;
-                    uint8_t g = g_shm->palette[idx * 3 + 1] << 2;
-                    uint8_t b = g_shm->palette[idx * 3 + 2] << 2;
+                    uint8_t idx = engine_pixels[i];
+                    uint8_t r = engine_palette[idx * 3 + 0] << 2;
+                    uint8_t g = engine_palette[idx * 3 + 1] << 2;
+                    uint8_t b = engine_palette[idx * 3 + 2] << 2;
                     uint32_t a = 0xff000000u;
                     int px = i % w, py = i / w;
                     if (px >= vx && px < vr && py >= vy && py < vb) {
-                        if (wf.composite_mode == ROTH_COMPOSITE_WORLD_ONLY ||
-                            idx == (uint8_t)wf.transparent_index)
+                        int reveal_world =
+                            wf.composite_mode == ROTH_COMPOSITE_WORLD_ONLY;
+                        if (!reveal_world && wf.engine_base != NULL) {
+                            uint32_t bx = (uint32_t)(px - vx);
+                            uint32_t by = (uint32_t)(py - vy);
+                            reveal_world =
+                                idx == wf.engine_base[
+                                    (size_t)by * wf.engine_base_pitch + bx];
+                        } else if (!reveal_world &&
+                                   idx == (uint8_t)wf.transparent_index) {
+                            reveal_world = 1;
+                        }
+                        if (reveal_world)
                             a = 0u;
                     }
                     rgb[i] = a | (r << 16) | (g << 8) | b;
@@ -472,13 +552,84 @@ int sdl_present_run(int scale)
 #ifndef ROTH_VANILLA
         if (world_ready) {
             SDL_UpdateTexture(wtex, NULL, wf.rgba, (int)wf.w * 4);
-            /* Map the engine-space viewport into the logical presentation rectangle. */
-            float sx = (float)aw / (float)w, sy = (float)ah / (float)h;
-            SDL_FRect wdst = { (float)wf.vx * sx, (float)wf.vy * sy,
-                               (float)wf.vw * sx, (float)wf.vh * sy };
-            SDL_RenderTexture(ren, wtex, NULL, &wdst);
             SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-            SDL_RenderTexture(ren, tex, NULL, NULL);
+            if (wf.composite_mode == ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS) {
+                /* The source owns the logical canvas. Preserve the engine display aspect and
+                 * center its authentic 8bpp chrome over that canvas without stretching it. */
+                float scale_x = (float)logical_w / (float)aw;
+                float scale_y = (float)logical_h / (float)ah;
+                float scale = scale_x < scale_y ? scale_x : scale_y;
+                float engine_w = (float)aw * scale;
+                float engine_h = (float)ah * scale;
+                SDL_FRect engine_dst = { ((float)logical_w - engine_w) * 0.5f,
+                                         ((float)logical_h - engine_h) * 0.5f,
+                                         engine_w, engine_h };
+                SDL_RenderTexture(ren, wtex, NULL, NULL);
+                SDL_RenderTexture(ren, tex, NULL, &engine_dst);
+
+                /* The engine normally bakes its software cursor into the 8bpp
+                 * frame. Centered-canvas mode keeps that frame cursor-free and
+                 * maps the cursor hotspot across the complete canvas instead. */
+                struct sdl_cursor_snapshot cursor;
+                if (read_cursor_snapshot(&cursor)) {
+                    static uint32_t cursor_rgba[ROTH_CURSOR_MAX];
+                    for (uint32_t i = 0; i < ROTH_CURSOR_MAX; i++)
+                        cursor_rgba[i] = 0;
+                    for (uint32_t y = 0; y < cursor.h; y++) {
+                        for (uint32_t x = 0; x < cursor.w; x++) {
+                            uint8_t idx = cursor.pixels[y * cursor.w + x];
+                            if (idx != 0) {
+                                uint8_t r = g_shm->palette[idx * 3 + 0] << 2;
+                                uint8_t g = g_shm->palette[idx * 3 + 1] << 2;
+                                uint8_t b = g_shm->palette[idx * 3 + 2] << 2;
+                                cursor_rgba[y * ROTH_CURSOR_MAX_W + x] =
+                                    0xff000000u | (r << 16) | (g << 8) | b;
+                            }
+                        }
+                    }
+                    if (!ctex) {
+                        ctex = SDL_CreateTexture(
+                            ren, SDL_PIXELFORMAT_ARGB8888,
+                            SDL_TEXTUREACCESS_STREAMING,
+                            ROTH_CURSOR_MAX_W, ROTH_CURSOR_MAX_H);
+                        if (ctex) {
+                            SDL_SetTextureScaleMode(ctex, SDL_SCALEMODE_NEAREST);
+                            SDL_SetTextureBlendMode(ctex, SDL_BLENDMODE_BLEND);
+                        }
+                    }
+                    if (ctex) {
+                        float pixel_scale_x = engine_w / (float)w;
+                        float pixel_scale_y = engine_h / (float)h;
+                        float hotspot_x =
+                            (float)cursor.mouse_x * (float)logical_w / (float)w;
+                        float hotspot_y =
+                            (float)cursor.mouse_y * (float)logical_h / (float)h;
+                        SDL_FRect cursor_src = {
+                            0.0f, 0.0f, (float)cursor.w, (float)cursor.h
+                        };
+                        SDL_FRect cursor_dst = {
+                            hotspot_x -
+                                (float)cursor.hotspot_x * pixel_scale_x,
+                            hotspot_y -
+                                (float)cursor.hotspot_y * pixel_scale_y,
+                            (float)cursor.w * pixel_scale_x,
+                            (float)cursor.h * pixel_scale_y
+                        };
+                        SDL_UpdateTexture(
+                            ctex, NULL, cursor_rgba,
+                            ROTH_CURSOR_MAX_W * (int)sizeof(uint32_t));
+                        SDL_RenderTexture(
+                            ren, ctex, &cursor_src, &cursor_dst);
+                    }
+                }
+            } else {
+                /* Map the engine-space viewport into the logical presentation rectangle. */
+                float sx = (float)aw / (float)w, sy = (float)ah / (float)h;
+                SDL_FRect wdst = { (float)wf.vx * sx, (float)wf.vy * sy,
+                                   (float)wf.vw * sx, (float)wf.vh * sy };
+                SDL_RenderTexture(ren, wtex, NULL, &wdst);
+                SDL_RenderTexture(ren, tex, NULL, NULL);
+            }
         } else
 #endif
         {
@@ -528,7 +679,9 @@ int sdl_present_run(int scale)
         g_shm->quit = 1; /* user closed the window: the game thread's shm_tick honors quit -> _exit */
     sdl_audio_shutdown(); /* M2: stop + join the audio callback, close the synth, quit AUDIO subsystem */
 #ifndef ROTH_VANILLA
+    roth_present_set_separate_cursor(0);
     if (wtex) SDL_DestroyTexture(wtex);
+    if (ctex) SDL_DestroyTexture(ctex);
 #endif
     SDL_DestroyTexture(tex);
     SDL_DestroyRenderer(ren);

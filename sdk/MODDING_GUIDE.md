@@ -143,6 +143,8 @@ struct roth_world_frame_v1 frame = {
     .composite_mode    = ROTH_COMPOSITE_ENGINE_COLORKEY_OVER_WORLD,
     .transparent_index = 0,
     .flags             = 0,
+    .engine_base_pixels = NULL,
+    .engine_base_pitch_bytes = 0,
 };
 roth_result result = (roth_result)api->present->submit_world_frame(api, &frame);
 ```
@@ -164,6 +166,20 @@ the viewport, then draws the engine frame over it. Inside the viewport, the subm
 sprites, cursors, labels, HUDs, and menus. `ROTH_COMPOSITE_WORLD_ONLY` suppresses every engine pixel
 inside the viewport while leaving the engine frame outside it unchanged. With no active world
 frame, the present path remains the engine-only path.
+
+For exact engine chrome, `engine_base_pixels` may point to a `vw` by `vh` plane of engine palette
+indices representing the untouched world underneath the chrome. Its pitch is
+`engine_base_pitch_bytes`, or `vw` when the pitch is zero. The host copies this plane during
+submission and reveals the RGBA world wherever the live engine pixel still equals its baseline;
+every changed engine pixel is drawn opaquely. This preserves legitimate chrome in all 256 palette
+indices, including index zero. When a baseline is present, `transparent_index` is ignored.
+
+For a source whose aspect differs from the engine, use
+`ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS`. The source then owns the complete logical canvas;
+the host fits the engine frame at its intended display aspect, centers it without stretching, and
+applies the baseline comparison, or the `transparent_index` fallback, inside the engine viewport.
+This keeps authentic chrome in a centered legacy-aspect region while the submitted world fills a
+widescreen or tall canvas.
 
 **Fades.** Damage flashes and screen fades tint the palette continuously rather than redrawing
 pixels, so the engine chrome fades for free — but your RGBA world does **not** (the host composites

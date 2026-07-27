@@ -21,9 +21,9 @@ extern "C" {
 
 /* ---- versions ------------------------------------------------------------ */
 #define ROTH_SDK_MAJOR 0
-#define ROTH_SDK_MINOR 6
+#define ROTH_SDK_MINOR 7
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 6
+#define ROTH_ABI_MINOR 7
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
@@ -84,10 +84,11 @@ enum {
     ROTH_PIXFMT_ARGB8888 = 1,  /* 32-bit 0xAARRGGBB words in little-endian memory */
 };
 
-/* World-frame compositing modes inside the submitted viewport. */
+/* World-frame compositing modes and placement. */
 enum {
     ROTH_COMPOSITE_ENGINE_COLORKEY_OVER_WORLD = 0,  /* draw engine 8bpp over the world; transparent_index reveals the world */
     ROTH_COMPOSITE_WORLD_ONLY = 1,  /* draw only the submitted world frame inside the viewport */
+    ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS = 2,  /* present the source as the full logical canvas, then center the aspect-correct engine 8bpp frame over it; transparent_index reveals the world inside the engine viewport */
 };
 
 /* State-notification flags. */
@@ -1295,7 +1296,7 @@ struct roth_game_ram_api_v1 {
 };
 
 /* ---- plain ABI structs (descriptors, events, state records) --------------- */
-/* roth_world_frame_v1: Caller-built world-frame descriptor. struct_size is sizeof this record as the caller built it; pixels are copied before submit_world_frame returns. */
+/* roth_world_frame_v1: Caller-built world-frame descriptor. struct_size is sizeof this record as the caller built it; pixels and an optional engine baseline are copied before submit_world_frame returns. */
 struct roth_world_frame_v1 {
     uint32_t struct_size;  /* sizeof(struct roth_world_frame_v1) as the caller built it */
     const uint32_t *pixels;  /* required source pixels */
@@ -1310,6 +1311,8 @@ struct roth_world_frame_v1 {
     uint32_t composite_mode;  /* ROTH_COMPOSITE_* value */
     uint32_t transparent_index;  /* engine palette index revealing the world in colorkey mode; ignored otherwise */
     uint32_t flags;  /* must be zero */
+    const uint8_t *engine_base_pixels;  /* optional vw-by-vh engine-palette-index baseline; an equal live engine pixel reveals the world and transparent_index is ignored */
+    uint32_t engine_base_pitch_bytes;  /* optional baseline row pitch; zero means vw */
 };
 /* roth_present_caps_v1: Host present-channel limits and supported pixel formats. */
 struct roth_present_caps_v1 {

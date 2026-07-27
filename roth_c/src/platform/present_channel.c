@@ -3,6 +3,7 @@
  */
 #include "present_channel.h"
 #include "roth_sdk.h"
+#include "sys/sys.h"
 
 #include <limits.h>
 #include <stddef.h>
@@ -26,11 +27,20 @@ static uint64_t monotonic_ns(void)
 struct wslot {
     uint32_t *px;
     uint32_t cap_px;
+    uint8_t *engine_base;
+    uint32_t engine_base_cap;
+    uint8_t *paired_engine;
+    uint32_t paired_engine_cap;
+    uint8_t paired_palette[256u * 3u];
     uint32_t w, h;
     int32_t vx, vy;
     uint32_t vw, vh;
+    uint32_t engine_base_pitch;
+    uint32_t has_engine_base;
     uint32_t composite_mode;
     uint32_t transparent_index;
+    uint32_t paired_engine_w, paired_engine_h;
+    uint32_t paired_engine_serial;
     uint32_t serial;
 };
 
@@ -39,12 +49,15 @@ static int g_producer = 0;                 /* GAME thread only */
 static int g_consumer = 1;                 /* present thread only */
 static unsigned g_ready = 2;               /* slot index plus WSLOT_FRESH */
 static uint32_t g_frame_serial;            /* GAME thread only */
+static int g_pending;                       /* GAME thread: producer awaits the next page flip */
 static int g_seen;                         /* present thread only */
 static int g_stale;                        /* present thread only */
 static uintptr_t g_owner;                  /* per-plugin roth_api_v1 address, zero when unowned */
 static uint32_t g_active;                  /* zero after withdraw/unload */
 static uint32_t g_engine_w = 320;
 static uint32_t g_engine_h = 200;
+static uint32_t g_separate_cursor;
+static uint32_t g_published_engine_serial;
 static __thread int g_in_present_callback;
 
 void roth_present_set_engine_dimensions(uint32_t w, uint32_t h)
@@ -53,6 +66,16 @@ void roth_present_set_engine_dimensions(uint32_t w, uint32_t h)
         return;
     __atomic_store_n(&g_engine_w, w, __ATOMIC_RELEASE);
     __atomic_store_n(&g_engine_h, h, __ATOMIC_RELEASE);
+}
+
+void roth_present_set_separate_cursor(int active)
+{
+    __atomic_store_n(&g_separate_cursor, active != 0, __ATOMIC_RELEASE);
+}
+
+int roth_present_separate_cursor(void)
+{
+    return __atomic_load_n(&g_separate_cursor, __ATOMIC_ACQUIRE) != 0;
 }
 
 static int clip_viewport(const struct roth_world_frame_v1 *f,
@@ -88,10 +111,15 @@ static int clip_viewport(const struct roth_world_frame_v1 *f,
 int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
                                         const struct roth_world_frame_v1 *frame)
 {
+    const uint8_t *engine_base = NULL;
+    uint32_t engine_base_pitch = 0;
+    int has_engine_base = 0;
+
     if (g_in_present_callback)
         return ROTH_ERR_UNSUPPORTED;
     if (!api || !frame ||
-        frame->struct_size < (uint32_t)sizeof(struct roth_world_frame_v1) ||
+        frame->struct_size <
+            (uint32_t)offsetof(struct roth_world_frame_v1, engine_base_pixels) ||
         !frame->pixels || frame->w == 0 || frame->h == 0 || frame->flags != 0)
         return ROTH_ERR_INVALID;
     if (frame->w > ROTH_WORLD_MAX_W || frame->h > ROTH_WORLD_MAX_H)
@@ -99,9 +127,11 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
     if (frame->format != ROTH_PIXFMT_ARGB8888)
         return ROTH_ERR_UNSUPPORTED;
     if (frame->composite_mode != ROTH_COMPOSITE_ENGINE_COLORKEY_OVER_WORLD &&
-        frame->composite_mode != ROTH_COMPOSITE_WORLD_ONLY)
+        frame->composite_mode != ROTH_COMPOSITE_WORLD_ONLY &&
+        frame->composite_mode != ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS)
         return ROTH_ERR_INVALID;
-    if (frame->composite_mode == ROTH_COMPOSITE_ENGINE_COLORKEY_OVER_WORLD &&
+    if ((frame->composite_mode == ROTH_COMPOSITE_ENGINE_COLORKEY_OVER_WORLD ||
+         frame->composite_mode == ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS) &&
         frame->transparent_index > 255u)
         return ROTH_ERR_RANGE;
 
@@ -111,6 +141,19 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
         return ROTH_ERR_INVALID;
     if ((uint64_t)(frame->h - 1u) * pitch + row_bytes > UINT32_MAX)
         return ROTH_ERR_INVALID;
+
+    if (frame->struct_size >= (uint32_t)sizeof(struct roth_world_frame_v1) &&
+        frame->engine_base_pixels != NULL &&
+        frame->composite_mode != ROTH_COMPOSITE_WORLD_ONLY) {
+        engine_base = frame->engine_base_pixels;
+        engine_base_pitch = frame->engine_base_pitch_bytes
+                          ? frame->engine_base_pitch_bytes : frame->vw;
+        if (engine_base_pitch < frame->vw ||
+            (uint64_t)(frame->vh - 1u) * engine_base_pitch + frame->vw >
+                UINT32_MAX)
+            return ROTH_ERR_INVALID;
+        has_engine_base = 1;
+    }
 
     int32_t vx, vy;
     uint32_t vw, vh;
@@ -135,6 +178,25 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
     for (uint32_t y = 0; y < frame->h; y++)
         memcpy(dst + (size_t)y * row_bytes, src + (size_t)y * pitch, row_bytes);
 
+    if (has_engine_base) {
+        uint32_t need_base = vw * vh;
+        uint32_t source_x = (uint32_t)((int64_t)vx - frame->vx);
+        uint32_t source_y = (uint32_t)((int64_t)vy - frame->vy);
+        if (s->engine_base_cap < need_base) {
+            uint8_t *next = (uint8_t *)realloc(s->engine_base, need_base);
+            if (!next)
+                return ROTH_ERR_NOMEM;
+            s->engine_base = next;
+            s->engine_base_cap = need_base;
+        }
+        for (uint32_t y = 0; y < vh; y++) {
+            memcpy(s->engine_base + (size_t)y * vw,
+                   engine_base + (size_t)(source_y + y) * engine_base_pitch +
+                       source_x,
+                   vw);
+        }
+    }
+
     if (owner == 0) {
         uintptr_t expected = 0;
         if (!__atomic_compare_exchange_n(&g_owner, &expected, (uintptr_t)api, 0,
@@ -148,15 +210,64 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
     s->vy = vy;
     s->vw = vw;
     s->vh = vh;
+    s->engine_base_pitch = has_engine_base ? vw : 0;
+    s->has_engine_base = (uint32_t)has_engine_base;
     s->composite_mode = frame->composite_mode;
     s->transparent_index = frame->transparent_index;
     s->serial = ++g_frame_serial;
+
+    /* Keep the world private until the engine finishes the page that contains
+     * its matching HUD/chrome. Publishing here lets the present thread combine
+     * this new world with the previous page-flip snapshot. A second submission
+     * before a flip simply replaces the staged world with the fresher one. */
+    g_pending = 1;
+
+    /* A Windows timer fire inside the plugin or graphics driver is queued for
+     * safety. Submission is the first narrow host boundary after that work, so
+     * drain it here instead of waiting for the next mouse poll. */
+    sys_tick_safe_point();
+    return ROTH_OK;
+}
+
+void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t h,
+                                    const uint8_t *palette, uint32_t serial)
+{
+    if (!g_pending || !pixels || !palette || w == 0 || h == 0 ||
+        (uint64_t)w * h > UINT32_MAX)
+        return;
+
+    struct wslot *s = &g_slot[g_producer];
+    uint32_t need = w * h;
+    if (s->paired_engine_cap < need) {
+        uint8_t *next = (uint8_t *)realloc(s->paired_engine, need);
+        if (!next) {
+            g_pending = 0;
+            return;
+        }
+        s->paired_engine = next;
+        s->paired_engine_cap = need;
+    }
+    memcpy(s->paired_engine, pixels, need);
+    memcpy(s->paired_palette, palette, sizeof s->paired_palette);
+    s->paired_engine_w = w;
+    s->paired_engine_h = h;
+    s->paired_engine_serial = serial;
+    g_pending = 0;
 
     __atomic_store_n(&g_active, 1u, __ATOMIC_RELEASE);
     unsigned prev = __atomic_exchange_n(&g_ready, (unsigned)g_producer | WSLOT_FRESH,
                                         __ATOMIC_ACQ_REL);
     g_producer = (int)(prev & WSLOT_IDX_MASK);
-    return ROTH_OK;
+}
+
+void roth_present_note_engine_frame_published(uint32_t serial)
+{
+    __atomic_store_n(&g_published_engine_serial, serial, __ATOMIC_RELEASE);
+}
+
+uint32_t roth_present_engine_frame_published(void)
+{
+    return __atomic_load_n(&g_published_engine_serial, __ATOMIC_ACQUIRE);
 }
 
 int32_t roth_present_withdraw_world_frame(const struct roth_api_v1 *api)
@@ -165,6 +276,7 @@ int32_t roth_present_withdraw_world_frame(const struct roth_api_v1 *api)
         return ROTH_ERR_INVALID;
     if (__atomic_load_n(&g_owner, __ATOMIC_ACQUIRE) != (uintptr_t)api)
         return ROTH_ERR_NOT_OWNER;
+    g_pending = 0;
     __atomic_store_n(&g_active, 0u, __ATOMIC_RELEASE);
     return ROTH_OK;
 }
@@ -186,6 +298,7 @@ void roth_present_release_owner(const struct roth_api_v1 *api)
 {
     if (!api || __atomic_load_n(&g_owner, __ATOMIC_ACQUIRE) != (uintptr_t)api)
         return;
+    g_pending = 0;
     __atomic_store_n(&g_active, 0u, __ATOMIC_RELEASE);
     uintptr_t expected = (uintptr_t)api;
     __atomic_compare_exchange_n(&g_owner, &expected, (uintptr_t)0, 0,
@@ -219,8 +332,15 @@ int roth_present_acquire(struct roth_present_frame *out)
     out->vy = s->vy;
     out->vw = s->vw;
     out->vh = s->vh;
+    out->engine_base = s->has_engine_base ? s->engine_base : NULL;
+    out->engine_base_pitch = s->engine_base_pitch;
     out->composite_mode = s->composite_mode;
     out->transparent_index = s->transparent_index;
+    out->paired_engine_pixels = s->paired_engine;
+    out->paired_engine_palette = s->paired_palette;
+    out->paired_engine_w = s->paired_engine_w;
+    out->paired_engine_h = s->paired_engine_h;
+    out->paired_engine_serial = s->paired_engine_serial;
     return 1;
 }
 

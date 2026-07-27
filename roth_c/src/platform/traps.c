@@ -19,6 +19,10 @@ void plugins_dispatch_compose_tick(uint8_t *pixels, uint32_t w, uint32_t h); /* 
 uint8_t plugins_dispatch_scancode(uint8_t sc);                               /* plugin_loader.c */
 int plugins_any_loaded(void);                                                /* plugin_loader.c */
 void roth_present_note_tick(void);                                           /* present_channel.c */
+int roth_present_separate_cursor(void);                                      /* present_channel.c */
+void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t h,
+                                    const uint8_t *palette, uint32_t serial);  /* present_channel.c */
+void roth_present_note_engine_frame_published(uint32_t serial);              /* present_channel.c */
 #endif
 
 #include <stdlib.h>
@@ -1215,17 +1219,47 @@ static int video_is_vga13h(void)
 static void composite_cursor(uint8_t *fb, uint16_t pitch, uint16_t ph)
 {
     static int off = -1;
+    uint8_t cw, ch;
+    int32_t cx, cy;
+    const uint8_t *spr;
+    int visible;
     if (off < 0) off = getenv("ROTH_NO_CURSOR") ? 1 : 0;
-    if (off) return;
-    if (GV8(VA_g_mouse_relative_mode)) return;                  /* g_mouse_relative_mode (mouselook) */
-    uint8_t cw = GV8(VA_g_cursor_sprite), ch = GV8(VA_g_cursor_sprite + 0x1);
-    if (cw == 0 || ch == 0 || cw > 32 || ch > 32)
+    cw = GV8(VA_g_cursor_sprite);
+    ch = GV8(VA_g_cursor_sprite + 0x1);
+    cx = (int32_t)GV32(VA_g_saveunder_sprite_color_ptr + 0x8);
+    cy = (int32_t)GV32(VA_g_saveunder_sprite_color_ptr + 0xc);
+    spr = (const uint8_t *)(uintptr_t)(0x7e952u + OBJ_DELTA);
+    visible = !off && !GV8(VA_g_mouse_relative_mode) &&
+              cw != 0 && ch != 0 &&
+              cw <= ROTH_CURSOR_MAX_W && ch <= ROTH_CURSOR_MAX_H;
+
+    if (g_shm != NULL) {
+        uint32_t seq = __atomic_load_n(&g_shm->cursor_seq, __ATOMIC_RELAXED) & ~1u;
+        __atomic_store_n(&g_shm->cursor_seq, seq + 1u, __ATOMIC_RELEASE);
+        g_shm->cursor_x = cx;
+        g_shm->cursor_y = cy;
+        g_shm->cursor_mouse_x = (int32_t)GV32(VA_g_mouse_x);
+        g_shm->cursor_mouse_y = (int32_t)GV32(VA_g_mouse_y);
+        g_shm->cursor_hotspot_x =
+            (int32_t)GV32(VA_g_saveunder_sprite_color_ptr + 0x10);
+        g_shm->cursor_hotspot_y =
+            (int32_t)GV32(VA_g_saveunder_sprite_color_ptr + 0x14);
+        g_shm->cursor_w = visible ? cw : 0;
+        g_shm->cursor_h = visible ? ch : 0;
+        g_shm->cursor_visible = visible;
+        if (visible)
+            memcpy(g_shm->cursor_pixels, spr, (size_t)cw * ch);
+        __atomic_store_n(&g_shm->cursor_seq, seq + 2u, __ATOMIC_RELEASE);
+    }
+    if (!visible)
         return;
-    int32_t cx = (int32_t)GV32(VA_g_saveunder_sprite_color_ptr + 0x8);       /* cursor top-left x (logical) */
-    int32_t cy = (int32_t)GV32(VA_g_saveunder_sprite_color_ptr + 0xc);       /* cursor top-left y (logical) */
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+    if (roth_present_separate_cursor())
+        return;
+#endif
+
     int ys = GV8(VA_g_hires_line_doubling_flag) ? 2 : 1;             /* g_hires_line_doubling_flag */
     cy *= ys;
-    const uint8_t *spr = (const uint8_t *)(uintptr_t)(0x7e952u + OBJ_DELTA);
     for (int sy = 0; sy < ch; sy++) {
         for (int r = 0; r < ys; r++) {
             int py = cy + sy * ys + r;
@@ -1241,6 +1275,69 @@ static void composite_cursor(uint8_t *fb, uint16_t pitch, uint16_t ph)
     }
 }
 
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+/* The live VESA page used by the inspect popup already contains the engine's
+ * software cursor. Centered-canvas presentation draws that cursor separately,
+ * so reconstruct the saved pixels in the copied page without touching the
+ * engine's display or consuming its save-under record. */
+static void remove_lfb_cursor_from_copy(uint8_t *frame, uint32_t page_base,
+                                        uint16_t pitch, uint16_t ph,
+                                        uint32_t rec)
+{
+    uint32_t surface = *(const uint32_t *)(uintptr_t)rec;
+    uint16_t wh = *(const uint16_t *)(uintptr_t)(rec + 4u);
+    uint8_t type = *(const uint8_t *)(uintptr_t)(rec + 7u);
+    uint32_t w = wh & 0xffu;
+    uint32_t h = wh >> 8;
+    uint32_t line_count;
+    uint32_t offset;
+    const uint8_t *saved;
+    uint32_t y;
+
+    if (surface == 0 || w == 0 || h == 0 ||
+        w > ROTH_CURSOR_MAX_W || h > ROTH_CURSOR_MAX_H ||
+        GV32(VA_g_video_mode_width) != pitch)
+        return;
+    if (type == 0x11u && GV8(VA_g_hires_line_doubling_flag) == 0)
+        line_count = 1;
+    else if (type == 0x12u && GV8(VA_g_hires_line_doubling_flag) != 0)
+        line_count = 2;
+    else
+        return;
+    if (surface < page_base)
+        return;
+    offset = surface - page_base;
+    if (offset >= (uint32_t)pitch * ph ||
+        offset % pitch + w > pitch ||
+        offset / pitch + h * line_count > ph)
+        return;
+
+    saved = (const uint8_t *)(uintptr_t)(rec + 0xcu);
+    for (y = 0; y < h; y++) {
+        uint8_t *dst =
+            frame + offset + (size_t)y * line_count * pitch;
+        uint32_t x;
+        for (x = 0; x < w; x++) {
+            if (line_count == 1) {
+                uint16_t pixel;
+                memcpy(&pixel, saved, sizeof pixel);
+                saved += sizeof pixel;
+                if ((uint8_t)pixel != 0)
+                    dst[x] = (uint8_t)(pixel >> 8);
+            } else {
+                uint32_t pixel;
+                memcpy(&pixel, saved, sizeof pixel);
+                saved += sizeof pixel;
+                if ((uint8_t)pixel != 0) {
+                    dst[x] = (uint8_t)(pixel >> 8);
+                    dst[pitch + x] = (uint8_t)(pixel >> 16);
+                }
+            }
+        }
+    }
+}
+#endif
+
 /* Publish the engine's linear back buffer (g_framebuffer_ptr) for the buffered
  * modes. Called at the PAGE FLIP — VESA int10 4F07 and the Mode-X CRTC start-
  * address write — because by then the renderer has finished the frame (the
@@ -1253,6 +1350,9 @@ static void composite_cursor(uint8_t *fb, uint16_t pitch, uint16_t ph)
  * the engine's buffer mid-render, which would flicker). */
 static uint8_t g_clean_frame[ROTH_FB_MAX];
 static uint32_t g_clean_w, g_clean_h, g_clean_ah;
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+static uint32_t g_clean_serial;
+#endif
 static int g_clean_valid;
 
 #ifdef ROTH_STANDALONE
@@ -1296,8 +1396,23 @@ static int video_publish_lfb_page(void)
     g_shm->cur_h = ph;
     /* line-doubled modes display at half height (logical 4:3); same as composed */
     g_shm->aspect_h = GV8(VA_g_hires_line_doubling_flag) ? (uint32_t)ph / 2 : ph;
-    /* The displayed page already carries the game's own cursor (drawn to the
-     * video target), so do NOT composite the host cursor on top here. */
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+    if (roth_present_separate_cursor()) {
+        uint32_t rec_a =
+            VA_g_cursor_prev_y + 0x4u + (uint32_t)OBJ_DELTA;
+        uint32_t rec_b =
+            VA_g_cursor_prev_y + 0x4010u + (uint32_t)OBJ_DELTA;
+        uint32_t page_base = lfb + off;
+
+        remove_lfb_cursor_from_copy(
+            g_shm->pixels, page_base, pitch, ph, rec_a);
+        remove_lfb_cursor_from_copy(
+            g_shm->pixels, page_base, pitch, ph, rec_b);
+        /* In separate-cursor mode this refreshes the snapshot and deliberately
+         * returns before drawing into the copied engine page. */
+        composite_cursor(g_shm->pixels, pitch, ph);
+    }
+#endif
     return 1;
 }
 
@@ -1319,6 +1434,11 @@ void video_publish_composed(void)
      * their logical aspect (320x200) — a 4:3-ish screen, not a tall portrait. */
     g_clean_ah = GV8(VA_g_hires_line_doubling_flag) ? (uint32_t)ph / 2 : ph; /* g_hires_line_doubling_flag */
     g_clean_valid = 1;
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+    g_clean_serial++;
+    roth_present_pair_engine_frame(g_clean_frame, g_clean_w, g_clean_h,
+                                   g_dac_rgb, g_clean_serial);
+#endif
 }
 
 /* modex_arm — faithful transcription of the Mode-X arm 0x2e36b (shared by the image-free
@@ -1796,6 +1916,10 @@ static void shm_tick(void)
     }
 #endif
     g_shm->frame++;
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+    if (g_clean_valid)
+        roth_present_note_engine_frame_published(g_clean_serial);
+#endif
     if (g_probe_blend && (g_shm->frame % 140) == 0) /* ~once/2s */
         LOGE("probe: transpTex-spans=%u  reached-blend=%u  NONblend-qa=0x%x  blend-qa=0x%x\n",
              g_shm->probe[0], g_shm->probe[1], g_shm->probe[2], g_shm->probe[3]);

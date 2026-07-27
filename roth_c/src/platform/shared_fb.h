@@ -21,6 +21,9 @@
 #define ROTH_FB_MAX (ROTH_FB_MAXW * ROTH_FB_MAXH)
 #define ROTH_KEY_RING 256
 #define ROTH_KEY_MASK (ROTH_KEY_RING - 1)
+#define ROTH_CURSOR_MAX_W 32
+#define ROTH_CURSOR_MAX_H 32
+#define ROTH_CURSOR_MAX (ROTH_CURSOR_MAX_W * ROTH_CURSOR_MAX_H)
 
 /* Keyboard events are raw PC set-1 scancodes; bit 7 set = key release (break),
  * exactly as port 0x60 delivers them. Extended (0xE0-prefixed) keys send the
@@ -56,6 +59,18 @@ struct roth_shm {
      * at their logical aspect (320x200) so they fill a 4:3-ish screen as the
      * original CRT did, not as a tall/narrow portrait. 0 => use cur_w:cur_h. */
     volatile uint32_t aspect_w, aspect_h;
+
+    /* Cursor snapshot for host-side wide-canvas placement. Normal presentation
+     * still receives the cursor baked into pixels. In centered-canvas mode the
+     * producer leaves pixels cursor-free and the SDL host maps this sprite over
+     * the full logical canvas. cursor_seq is a short seqlock. */
+    volatile uint32_t cursor_seq;
+    volatile int32_t cursor_x, cursor_y;             /* sprite top-left, engine logical pixels */
+    volatile int32_t cursor_mouse_x, cursor_mouse_y; /* hotspot/input position */
+    volatile int32_t cursor_hotspot_x, cursor_hotspot_y; /* sprite origin relative to input */
+    volatile uint32_t cursor_w, cursor_h;
+    volatile uint32_t cursor_visible;
+    uint8_t cursor_pixels[ROTH_CURSOR_MAX];
 };
 
 #endif

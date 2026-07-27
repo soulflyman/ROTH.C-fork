@@ -4,10 +4,10 @@
 
  "version": {
   "sdk_major": 0,
-  "sdk_minor": 6,
+  "sdk_minor": 7,
   "abi_major": 0,
-  "abi_minor": 6,
-  "load_rule": "A plugin loads iff abi_major == host.abi_major AND abi_minor <= host.abi_minor. Additive growth requires a minor bump; a breaking change requires a major bump. The engine-call table's slot order is exposure order and is frozen ABI: new exposures append at the end, existing slot offsets never move, and the exposure-order gate enforces prefix stability against the released baseline. Version 0.6 appends the PRESENT context, the roth_present_v1 and roth_window_v1 host-service sub-tables, and the on_map_loaded, on_palette_changed, on_video_mode_changed, and on_present_pace callbacks. Version 0.5 appends blit_das_image_to_buffer and draw_popup_shadow_border_smc to the engine table. Version 0.4 appends game_ram->to_ptr, struct roth_mouse_poll_v1, the on_scancode and on_mouse_poll callbacks, and roth_api_v1->plugin_dir()."
+  "abi_minor": 7,
+  "load_rule": "A plugin loads iff abi_major == host.abi_major AND abi_minor <= host.abi_minor. Additive growth requires a minor bump; a breaking change requires a major bump. The engine-call table's slot order is exposure order and is frozen ABI: new exposures append at the end, existing slot offsets never move, and the exposure-order gate enforces prefix stability against the released baseline. Version 0.7 adds the centered-engine-over-source-canvas composite mode and appends an optional engine-index baseline plane to roth_world_frame_v1. Version 0.6 appends the PRESENT context, the roth_present_v1 and roth_window_v1 host-service sub-tables, and the on_map_loaded, on_palette_changed, on_video_mode_changed, and on_present_pace callbacks. Version 0.5 appends blit_das_image_to_buffer and draw_popup_shadow_border_smc to the engine table. Version 0.4 appends game_ram->to_ptr, struct roth_mouse_poll_v1, the on_scancode and on_mouse_poll callbacks, and roth_api_v1->plugin_dir()."
  },
 
  "contexts": {
@@ -40,10 +40,11 @@
    "values": [
     {"name": "ROTH_PIXFMT_ARGB8888", "value": 1, "desc": "32-bit 0xAARRGGBB words in little-endian memory"}
    ]},
-  {"note": "World-frame compositing modes inside the submitted viewport.",
+  {"note": "World-frame compositing modes and placement.",
    "values": [
     {"name": "ROTH_COMPOSITE_ENGINE_COLORKEY_OVER_WORLD", "value": 0, "desc": "draw engine 8bpp over the world; transparent_index reveals the world"},
-    {"name": "ROTH_COMPOSITE_WORLD_ONLY",                  "value": 1, "desc": "draw only the submitted world frame inside the viewport"}
+    {"name": "ROTH_COMPOSITE_WORLD_ONLY",                  "value": 1, "desc": "draw only the submitted world frame inside the viewport"},
+    {"name": "ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS", "value": 2, "desc": "present the source as the full logical canvas, then center the aspect-correct engine 8bpp frame over it; transparent_index reveals the world inside the engine viewport"}
    ]},
   {"note": "State-notification flags.",
    "values": [
@@ -65,7 +66,7 @@
 
  "abi_structs": {
   "structs": [
-   {"struct_name": "roth_world_frame_v1", "note": "Caller-built world-frame descriptor. struct_size is sizeof this record as the caller built it; pixels are copied before submit_world_frame returns.",
+   {"struct_name": "roth_world_frame_v1", "note": "Caller-built world-frame descriptor. struct_size is sizeof this record as the caller built it; pixels and an optional engine baseline are copied before submit_world_frame returns.",
     "fields": [
      {"name": "struct_size",       "type": "uint32_t",        "desc": "sizeof(struct roth_world_frame_v1) as the caller built it"},
      {"name": "pixels",            "type": "const uint32_t *", "desc": "required source pixels"},
@@ -79,7 +80,9 @@
      {"name": "vh",                "type": "uint32_t",        "desc": "viewport height; zero is invalid"},
      {"name": "composite_mode",    "type": "uint32_t",        "desc": "ROTH_COMPOSITE_* value"},
      {"name": "transparent_index", "type": "uint32_t",        "desc": "engine palette index revealing the world in colorkey mode; ignored otherwise"},
-     {"name": "flags",              "type": "uint32_t",        "desc": "must be zero"}
+     {"name": "flags",              "type": "uint32_t",        "desc": "must be zero"},
+     {"name": "engine_base_pixels", "type": "const uint8_t *", "desc": "optional vw-by-vh engine-palette-index baseline; an equal live engine pixel reveals the world and transparent_index is ignored"},
+     {"name": "engine_base_pitch_bytes", "type": "uint32_t",   "desc": "optional baseline row pitch; zero means vw"}
     ]},
    {"struct_name": "roth_present_caps_v1", "note": "Host present-channel limits and supported pixel formats.",
     "fields": [

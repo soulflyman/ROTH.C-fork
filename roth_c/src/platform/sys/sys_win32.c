@@ -4,9 +4,8 @@
  * library loading, a low (32-bit-addressable) allocator, executable-page
  * protection for self-modifying-code patches, executable-directory and directory
  * queries, the fixed-address arena mapping, and the software descriptor-table
- * ledger. The periodic game tick is not yet provided here — its bodies are
- * present as clearly-marked not-yet stubs; the real timer mechanism is a separate
- * piece of work.
+ * ledger. The periodic game tick is delivered below by a waitable-timer thread
+ * and a safe context hijack back onto the game thread.
  */
 #include "sys.h"
 #include "roth_host.h"
@@ -23,6 +22,14 @@
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
 
+/* Hybrid-GPU drivers inspect the executable export table when the process
+ * starts. The moddable host can load GPU renderers, so request the high-
+ * performance adapter; the software-only vanilla flavor keeps the OS default. */
+#ifndef ROTH_VANILLA
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001u;
+__declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 0x00000001u;
+#endif
+
 /* ---- the game thread ----------------------------------------------------------
  * The game runs on a thread created here with CreateThread so we own a full-access
  * HANDLE for it: the periodic tick below must suspend exactly this thread, read and
@@ -31,6 +38,7 @@
  * only". The thread's stack bounds are captured (on the thread itself) so the tick
  * can sanity-check a candidate stack pointer before touching the stack. */
 static HANDLE    g_game_thread;         /* full-access handle, published before the timer arms */
+static DWORD     g_game_thread_id;      /* cooperative safe points accept this thread only */
 static size_t    g_game_stack_reserve;  /* the stack reservation, for the bounds computation */
 static uintptr_t g_stack_lo, g_stack_hi;/* game-thread stack window [lo, hi) */
 
@@ -54,9 +62,8 @@ int sys_spawn_game_thread(void *(*fn)(void *), void *arg, size_t stack_bytes)
     g_game_stack_reserve = stack_bytes;
     /* STACK_SIZE_PARAM_IS_A_RESERVATION: stack_bytes is the RESERVE (matching the
      * large reservation the thread is given elsewhere); the OS commits on demand. */
-    DWORD tid;
     g_game_thread = CreateThread(NULL, (SIZE_T)stack_bytes, game_thread_entry, NULL,
-                                 STACK_SIZE_PARAM_IS_A_RESERVATION, &tid);
+                                 STACK_SIZE_PARAM_IS_A_RESERVATION, &g_game_thread_id);
     if (!g_game_thread) {
         LOGE("CreateThread(game) failed: %lu\n", (unsigned long)GetLastError());
         return -1;
@@ -95,11 +102,59 @@ void sys_game_thread_enter(void)
  * fxsave. */
 static volatile LONG g_in_tramp;   /* set by the timer thread on hijack; cleared by the body below */
 
+/* A timer fire can catch the game thread inside a plugin or graphics driver.
+ * Redirecting arbitrary DLL code is unsafe, but dropping that tick starves the
+ * game clock whenever a plugin owns most of the frame. Queue a bounded amount
+ * of elapsed time and drain it after the thread next reaches an executable
+ * safe point. The bound prevents a long driver/loader stall from producing an
+ * unbounded catch-up burst. */
+#define WIN_TICK_PENDING_MAX 32
+static volatile LONG g_tick_pending;
+
+static void queue_pending_tick(void)
+{
+    LONG pending;
+    do {
+        pending = InterlockedCompareExchange(&g_tick_pending, 0, 0);
+        if (pending >= WIN_TICK_PENDING_MAX)
+            return;
+    } while (InterlockedCompareExchange(&g_tick_pending, pending + 1,
+                                         pending) != pending);
+}
+
+static void drain_pending_ticks(void)
+{
+    LONG pending;
+    do {
+        pending = InterlockedExchange(&g_tick_pending, 0);
+        while (pending-- > 0)
+            roth_tick_isr();
+    } while (InterlockedCompareExchange(&g_tick_pending, 0, 0) != 0);
+}
+
 void roth_win_tramp_body(void);
 void roth_win_tramp_body(void)
 {
-    roth_tick_isr();
-    g_in_tramp = 0;                /* re-open hijacking (a fire during the epilogue is transparent) */
+    drain_pending_ticks();
+    /* Re-open delivery; a fire during the short assembly epilogue is transparent. */
+    InterlockedExchange(&g_in_tramp, 0);
+}
+
+/* The timer cannot safely redirect code inside a plugin or graphics driver.
+ * Once that code returns through a known host boundary, drain its queued time
+ * here instead of waiting for a future timer sample to happen inside the much
+ * smaller executable window. The same guard serializes this cooperative path
+ * with the asynchronous trampoline. */
+void sys_tick_safe_point(void)
+{
+    if (InterlockedCompareExchange(&g_tick_pending, 0, 0) == 0)
+        return;
+    if (GetCurrentThreadId() != g_game_thread_id)
+        return;
+    if (InterlockedCompareExchange(&g_in_tramp, 1, 0) != 0)
+        return;
+    drain_pending_ticks();
+    InterlockedExchange(&g_in_tramp, 0);
 }
 
 extern void tick_trampoline(void);
@@ -130,11 +185,10 @@ __asm__(
  *
  * The safe-point test (below) hijacks ONLY when the interrupted instruction is in
  * our own image, the stack pointer is a plausible game-stack address with headroom,
- * and no previous trampoline is still running; otherwise the tick is deferred to the
- * next fire (the game clock tolerates the occasional skipped tick). The "in our own
- * image" bound is PRECOMPUTED once at arm time — the per-fire path calls no
- * potentially-loader-locking API, because the suspended game thread may itself hold
- * the loader lock. */
+ * and no previous trampoline is still running; otherwise elapsed ticks remain in a
+ * bounded pending queue until a later safe point. The "in our own image" bound is
+ * PRECOMPUTED once at arm time — the per-fire path calls no potentially-loader-locking
+ * API, because the suspended game thread may itself hold the loader lock. */
 static uintptr_t g_image_lo, g_image_hi;   /* [lo, hi) of our own mapped image, precomputed */
 static HANDLE    g_timer;                  /* the waitable timer */
 static HANDLE    g_timer_stop;             /* manual-reset event: ends the timer thread */
@@ -182,6 +236,10 @@ static void tick_fire(void)
     }
     if (!g_game_thread)
         return;
+    /* Account for this fire before attempting the safe-point hijack. If the
+     * thread is in plugin/driver code, or a prior trampoline is still active,
+     * the pending tick survives for the next safe executable location. */
+    queue_pending_tick();
     if (SuspendThread(g_game_thread) == (DWORD)-1)
         return;
 
@@ -230,6 +288,8 @@ void sys_tick_start(unsigned period_us)
 {
     compute_image_bounds();
     g_period_us = (LONG)period_us;
+    InterlockedExchange(&g_in_tramp, 0);
+    InterlockedExchange(&g_tick_pending, 0);
 
     /* The high-resolution waitable timer gives ~1 ms accuracy without raising the
      * global system timer resolution. Fall back to a plain waitable timer on an SKU

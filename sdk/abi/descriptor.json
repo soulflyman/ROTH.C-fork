@@ -2,9 +2,9 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 6,
+ "sdk_minor": 7,
  "abi_major": 0,
- "abi_minor": 6,
+ "abi_minor": 7,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
@@ -648,7 +648,7 @@
    ]
   },
   "roth_world_frame_v1": {
-   "size": 52,
+   "size": 60,
    "fields": [
     {
      "name": "struct_size",
@@ -725,6 +725,18 @@
     {
      "name": "flags",
      "offset": 48,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "engine_base_pixels",
+     "offset": 52,
+     "size": 4,
+     "kind": "ptr"
+    },
+    {
+     "name": "engine_base_pitch_bytes",
+     "offset": 56,
      "size": 4,
      "kind": "uint32"
     }

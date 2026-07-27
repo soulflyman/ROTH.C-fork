@@ -152,6 +152,15 @@ channel until unload; other plugins receive `ROTH_ERR_NOT_OWNER`. The owner can
 `withdraw_world_frame` immediately, while a 16-present-iteration stale-frame cutoff remains a
 crash-safety backstop.
 
+`ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS` treats the submitted source as the complete logical
+canvas rather than scaling it into the engine viewport. The host preserves the engine's display
+aspect and centers that 8bpp frame over the canvas. An optional `engine_base_pixels` plane supplies
+the untouched engine-index world under that chrome: matching live pixels reveal the RGBA world and
+changed pixels remain opaque, preserving every palette index including zero. Without a baseline,
+the host falls back to the palette-index colorkey. This is the explicit widescreen path: the world
+may use the source aspect while authentic HUD and other engine chrome remain unstretched in a
+centered legacy-aspect region.
+
 The three GAME notifications carry event records with per-kind generations. Palette and video
 deliver a synthetic `ROTH_EVENT_INITIAL` before that plugin's first `on_frame_game`; the first map
 event a plugin naturally sees is also initial. Notifications dispatch before `on_frame_game` in the
@@ -184,8 +193,10 @@ machinery).
 
 ## Versioning + the bump policy
 
-The SDK and ABI are at **0.6** (`ROTH_SDK_MAJOR/MINOR`, `ROTH_ABI_MAJOR/MINOR` in `roth_sdk.h`;
-`version` in `sdk_api.json`). 0.6 appended, all trailing (every prior offset byte-identical): the
+The SDK and ABI are at **0.7** (`ROTH_SDK_MAJOR/MINOR`, `ROTH_ABI_MAJOR/MINOR` in `roth_sdk.h`;
+`version` in `sdk_api.json`). 0.7 adds the centered-engine-over-source-canvas composite mode and
+appends the optional engine-index baseline plane to `roth_world_frame_v1`; every prior field offset
+remains byte-identical. 0.6 appended, all trailing (every prior offset byte-identical): the
 `PRESENT` execution context; two host-service sub-tables reached through new trailing `roth_api_v1`
 pointers — `roth_present_v1` (a descriptor-based full-colour world-frame channel) and
 `roth_window_v1` (window mode / present mode / minimum-interval / display-mode information);

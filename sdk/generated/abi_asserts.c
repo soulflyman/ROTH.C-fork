@@ -278,7 +278,7 @@ _Static_assert(sizeof(((struct roth_window_v1 *)0)->get_display_mode_count) == 4
 _Static_assert(offsetof(struct roth_window_v1, get_display_mode) == 24, "offsetof roth_window_v1.get_display_mode");
 _Static_assert(sizeof(((struct roth_window_v1 *)0)->get_display_mode) == 4, "fieldsize roth_window_v1.get_display_mode");
 
-_Static_assert(sizeof(struct roth_world_frame_v1) == 52, "sizeof roth_world_frame_v1");
+_Static_assert(sizeof(struct roth_world_frame_v1) == 60, "sizeof roth_world_frame_v1");
 _Static_assert(offsetof(struct roth_world_frame_v1, struct_size) == 0, "offsetof roth_world_frame_v1.struct_size");
 _Static_assert(sizeof(((struct roth_world_frame_v1 *)0)->struct_size) == 4, "fieldsize roth_world_frame_v1.struct_size");
 _Static_assert(offsetof(struct roth_world_frame_v1, pixels) == 4, "offsetof roth_world_frame_v1.pixels");
@@ -305,4 +305,8 @@ _Static_assert(offsetof(struct roth_world_frame_v1, transparent_index) == 44, "o
 _Static_assert(sizeof(((struct roth_world_frame_v1 *)0)->transparent_index) == 4, "fieldsize roth_world_frame_v1.transparent_index");
 _Static_assert(offsetof(struct roth_world_frame_v1, flags) == 48, "offsetof roth_world_frame_v1.flags");
 _Static_assert(sizeof(((struct roth_world_frame_v1 *)0)->flags) == 4, "fieldsize roth_world_frame_v1.flags");
+_Static_assert(offsetof(struct roth_world_frame_v1, engine_base_pixels) == 52, "offsetof roth_world_frame_v1.engine_base_pixels");
+_Static_assert(sizeof(((struct roth_world_frame_v1 *)0)->engine_base_pixels) == 4, "fieldsize roth_world_frame_v1.engine_base_pixels");
+_Static_assert(offsetof(struct roth_world_frame_v1, engine_base_pitch_bytes) == 56, "offsetof roth_world_frame_v1.engine_base_pitch_bytes");
+_Static_assert(sizeof(((struct roth_world_frame_v1 *)0)->engine_base_pitch_bytes) == 4, "fieldsize roth_world_frame_v1.engine_base_pitch_bytes");
 
