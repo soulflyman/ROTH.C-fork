@@ -310,10 +310,16 @@ int sdl_present_run(int scale)
      * driver onto a slow path is invisible. Walk SDL's own driver list by name instead, in SDL's
      * own order with the software renderer tried last, and report every rejection with its reason.
      * The selected backend on a healthy system is the same one as before; only the diagnosis is
-     * new. A caller that named a driver through SDL's own hint keeps deciding on its own — that
-     * path is left exactly as SDL handles it, and the unnamed call also remains the last resort. */
+     * new. The unnamed call remains the last resort. */
     SDL_Renderer *ren = NULL;
+    /* A caller can name the backend. SDL's hint carries that name when SDL's own view of the
+     * environment is intact; when it is not, the environment variable of the same name still
+     * carries it, so read that directly rather than silently ignoring a request that was made.
+     * Whichever answers, the named backend is created here by name — the request then reaches the
+     * driver either way, and a refusal is reported with its reason instead of vanishing. */
     const char *driver_hint = SDL_GetHint(SDL_HINT_RENDER_DRIVER);
+    if (driver_hint == NULL || driver_hint[0] == '\0')
+        driver_hint = getenv(SDL_HINT_RENDER_DRIVER);
     int drivers = SDL_GetNumRenderDrivers();
     /* The list first, so a log that reports a backend still says what else was there and in what
      * order it would have been tried. Silence on its own is not evidence of anything. */
@@ -326,11 +332,14 @@ int sdl_present_run(int scale)
         fprintf(stderr, " (none)");
     fprintf(stderr, "\n");
     if (driver_hint != NULL && driver_hint[0] != '\0') {
-        /* A caller that named a driver keeps deciding: SDL applies the request and reports its own
-         * attempts, so say that the walk was skipped rather than leaving its absence unexplained. */
-        fprintf(stderr, "[sdl] renderer driver named by hint: '%s' (SDL chooses; the attempts below "
-                        "are its own)\n", driver_hint);
-    } else {
+        fprintf(stderr, "[sdl] renderer driver named: '%s'\n", driver_hint);
+        ren = SDL_CreateRenderer(win, driver_hint);
+        if (!ren)
+            fprintf(stderr, "[sdl] renderer '%s' unavailable: %s\n", driver_hint, SDL_GetError());
+    }
+    /* A named backend that could not be created falls through to the walk rather than to the
+     * unnamed call, so the run still lands on the best available backend and says which. */
+    if (!ren) {
         for (int software_pass = 0; software_pass < 2 && !ren; software_pass++) {
             for (int i = 0; i < drivers && !ren; i++) {
                 const char *name = SDL_GetRenderDriver(i);
@@ -338,6 +347,8 @@ int sdl_present_run(int scale)
                     continue;
                 if ((SDL_strcmp(name, SDL_SOFTWARE_RENDERER) == 0) != software_pass)
                     continue;
+                if (driver_hint != NULL && SDL_strcmp(name, driver_hint) == 0)
+                    continue;   /* already attempted by name above; its reason is already logged */
                 ren = SDL_CreateRenderer(win, name);
                 if (!ren)
                     fprintf(stderr, "[sdl] renderer '%s' unavailable: %s\n",
