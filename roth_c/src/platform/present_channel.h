@@ -41,6 +41,7 @@ int32_t roth_window_get_display_mode(const struct roth_api_v1 *api, int32_t idx,
  * dimensions. */
 struct roth_present_frame {
     const uint32_t *rgba;
+    uint32_t serial;            /* identifies the world image in rgba; never zero for a live frame */
     uint32_t w, h;
     int32_t vx, vy;
     uint32_t vw, vh;
@@ -59,13 +60,20 @@ struct roth_present_frame {
 void roth_present_set_engine_dimensions(uint32_t w, uint32_t h);
 int roth_present_acquire(struct roth_present_frame *out);
 
-/* A submitted world frame is staged until the next completed engine page flip.
- * The game thread pairs that finished 8-bit engine layer with the staged world;
- * the shared-frame publisher then announces when its live copy has caught up. */
+/* A submitted world frame is staged until the engine page it belongs to is both
+ * finished and published. The completed page names itself here and reserves the
+ * room its copy needs; the copy is then taken at the publish site, from the very
+ * bytes that reach the shared frame, and only while that page is still the one
+ * being published. The world reaches the consumer with that copy, so the engine
+ * layer a composite tests against is the published image of the same frame,
+ * overlays and all. The shared-frame publisher separately names the engine frame
+ * its live copy currently holds, so a consumer can tell whether that copy is the
+ * same frame the world was paired with before compositing the two together. */
+void roth_present_note_engine_page(uint32_t serial, uint32_t w, uint32_t h);
 void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t h,
                                     const uint8_t *palette, uint32_t serial);
-void roth_present_note_engine_frame_published(uint32_t serial);
-uint32_t roth_present_engine_frame_published(void);
+void roth_present_note_shared_engine_serial(uint32_t serial);
+uint32_t roth_present_shared_engine_serial(void);
 
 /* The present thread publishes whether it is currently consuming the centered
  * canvas mode. The frame producer uses this to keep the engine layer

@@ -20,9 +20,10 @@ uint8_t plugins_dispatch_scancode(uint8_t sc);                               /* 
 int plugins_any_loaded(void);                                                /* plugin_loader.c */
 void roth_present_note_tick(void);                                           /* present_channel.c */
 int roth_present_separate_cursor(void);                                      /* present_channel.c */
+void roth_present_note_engine_page(uint32_t serial, uint32_t w, uint32_t h);  /* present_channel.c */
 void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t h,
                                     const uint8_t *palette, uint32_t serial);  /* present_channel.c */
-void roth_present_note_engine_frame_published(uint32_t serial);              /* present_channel.c */
+void roth_present_note_shared_engine_serial(uint32_t serial);                /* present_channel.c */
 #endif
 
 #include <stdlib.h>
@@ -1435,9 +1436,12 @@ void video_publish_composed(void)
     g_clean_ah = GV8(VA_g_hires_line_doubling_flag) ? (uint32_t)ph / 2 : ph; /* g_hires_line_doubling_flag */
     g_clean_valid = 1;
 #if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+    /* Name the finished page for the world frame staged against it. Its pixels are paired later,
+     * from the frame the tick publishes, so that the engine layer handed to a compositing consumer
+     * carries everything the published frame carries — this snapshot is only the world + chrome the
+     * renderer left in the back buffer, without the cursor or any overlay drawn at the publish. */
     g_clean_serial++;
-    roth_present_pair_engine_frame(g_clean_frame, g_clean_w, g_clean_h,
-                                   g_dac_rgb, g_clean_serial);
+    roth_present_note_engine_page(g_clean_serial, g_clean_w, g_clean_h);
 #endif
 }
 
@@ -1818,6 +1822,13 @@ static void shm_tick(void)
 #ifdef ROTH_STANDALONE
     int ig_staging = 0;
 #endif
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+    /* Whether this tick ships the page the last flip made current — the snapshot taken at that
+     * flip, or the live copy of that same page for the widgets drawn straight to the display. Only
+     * such a frame may be paired with a staged world: a cutscene frame or a plain 13h screen is a
+     * different image entirely, and the page-flip identity would not describe it. */
+    int published_page = 0;
+#endif
     if (video_publish_gdv()) {
         /* cutscene frame published above */
     } else if (video_is_vga13h()) {
@@ -1881,6 +1892,12 @@ static void shm_tick(void)
             g_shm->aspect_h = g_clean_ah;
             composite_cursor(pubtgt, (uint16_t)g_clean_w, (uint16_t)g_clean_h);
         }
+#if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+        /* Both branches here ship the page the last flip made current, named by that flip's
+         * identity: its snapshot, or the live copy of the same page the widgets drawn straight to
+         * the display need. Without a flip behind them there is no page and no identity. */
+        published_page = g_clean_valid;
+#endif
     }
 
     if (g_video_log) {
@@ -1915,11 +1932,22 @@ static void shm_tick(void)
             memcpy(g_shm->pixels, g_pub_stage, stage_n);
     }
 #endif
-    g_shm->frame++;
 #if defined(ROTH_STANDALONE) && !defined(ROTH_VANILLA)
+    /* The frame is complete here: overlays composed, and a staged frame already blitted whole. Hand
+     * these exact bytes to a world frame staged against this same page, so the engine layer it is
+     * composited with is the published image rather than a snapshot taken before any of the above.
+     * Nothing is copied unless a world frame is waiting for this page. */
+    if (published_page)
+        roth_present_pair_engine_frame(g_shm->pixels, g_shm->cur_w, g_shm->cur_h,
+                                       g_shm->palette, g_clean_serial);
+    /* Name the engine frame the shared buffer now holds BEFORE publishing the frame counter, so a
+     * consumer that observes the counter can trust the identity it reads next — and so a consumer
+     * compositing against a separately paired copy of one engine frame can tell whether this buffer
+     * still holds that same frame. */
     if (g_clean_valid)
-        roth_present_note_engine_frame_published(g_clean_serial);
+        roth_present_note_shared_engine_serial(g_clean_serial);
 #endif
+    g_shm->frame++;
     if (g_probe_blend && (g_shm->frame % 140) == 0) /* ~once/2s */
         LOGE("probe: transpTex-spans=%u  reached-blend=%u  NONblend-qa=0x%x  blend-qa=0x%x\n",
              g_shm->probe[0], g_shm->probe[1], g_shm->probe[2], g_shm->probe[3]);

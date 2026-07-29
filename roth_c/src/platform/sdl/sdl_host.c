@@ -45,6 +45,7 @@ int  plugins_any_loaded(void);                     /* plugin_loader.c */
  * as viewer.c <-> host over shm today. */
 extern struct roth_shm *g_shm;
 
+#ifndef ROTH_VANILLA
 struct sdl_cursor_snapshot {
     int32_t x, y;
     int32_t mouse_x, mouse_y;
@@ -83,6 +84,62 @@ static int read_cursor_snapshot(struct sdl_cursor_snapshot *out)
     }
     return 0;
 }
+
+/* Draw the engine's software cursor over the finished composite. While a submitted world frame
+ * owns the canvas the engine layer is published cursor-free — the publisher leaves the sprite out
+ * of the frame the world is paired with — so the cursor is placed here instead, from the same
+ * sprite, hotspot and pointer position the engine itself would have used. px_scale converts one
+ * engine pixel to canvas units; hot_scale maps the engine-space pointer onto the canvas. The two
+ * differ only when the engine layer occupies part of a larger canvas. */
+static void draw_engine_cursor(SDL_Renderer *ren, SDL_Texture **ctex,
+                               float px_scale_x, float px_scale_y,
+                               float hot_scale_x, float hot_scale_y)
+{
+    static uint32_t cursor_rgba[ROTH_CURSOR_MAX];
+    struct sdl_cursor_snapshot cursor;
+    SDL_FRect cursor_src, cursor_dst;
+    float hotspot_x, hotspot_y;
+
+    if (!read_cursor_snapshot(&cursor))
+        return;
+    for (uint32_t i = 0; i < ROTH_CURSOR_MAX; i++)
+        cursor_rgba[i] = 0;
+    for (uint32_t y = 0; y < cursor.h; y++) {
+        for (uint32_t x = 0; x < cursor.w; x++) {
+            uint8_t idx = cursor.pixels[y * cursor.w + x];
+            if (idx != 0) {
+                uint8_t r = g_shm->palette[idx * 3 + 0] << 2;
+                uint8_t g = g_shm->palette[idx * 3 + 1] << 2;
+                uint8_t b = g_shm->palette[idx * 3 + 2] << 2;
+                cursor_rgba[y * ROTH_CURSOR_MAX_W + x] =
+                    0xff000000u | (r << 16) | (g << 8) | b;
+            }
+        }
+    }
+    if (!*ctex) {
+        *ctex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
+                                  SDL_TEXTUREACCESS_STREAMING,
+                                  ROTH_CURSOR_MAX_W, ROTH_CURSOR_MAX_H);
+        if (!*ctex)
+            return;
+        SDL_SetTextureScaleMode(*ctex, SDL_SCALEMODE_NEAREST);
+        SDL_SetTextureBlendMode(*ctex, SDL_BLENDMODE_BLEND);
+    }
+    hotspot_x = (float)cursor.mouse_x * hot_scale_x;
+    hotspot_y = (float)cursor.mouse_y * hot_scale_y;
+    cursor_src.x = 0.0f;
+    cursor_src.y = 0.0f;
+    cursor_src.w = (float)cursor.w;
+    cursor_src.h = (float)cursor.h;
+    cursor_dst.x = hotspot_x - (float)cursor.hotspot_x * px_scale_x;
+    cursor_dst.y = hotspot_y - (float)cursor.hotspot_y * px_scale_y;
+    cursor_dst.w = (float)cursor.w * px_scale_x;
+    cursor_dst.h = (float)cursor.h * px_scale_y;
+    SDL_UpdateTexture(*ctex, NULL, cursor_rgba,
+                      ROTH_CURSOR_MAX_W * (int)sizeof(uint32_t));
+    SDL_RenderTexture(ren, *ctex, &cursor_src, &cursor_dst);
+}
+#endif /* !ROTH_VANILLA */
 
 /* SDL_Scancode -> PC set-1 make code. 0 = unmapped. Extended keys carry a 0xE0 prefix flag in the
  * high byte (0x100). Carried over VERBATIM from viewer.c:29-85 — the SDL_SCANCODE_* enum is stable
@@ -248,7 +305,33 @@ int sdl_present_run(int scale)
         SDL_Quit();
         return -1;
     }
-    SDL_Renderer *ren = SDL_CreateRenderer(win, NULL);   /* SDL3: no index; NULL = pick a backend */
+    /* Asking SDL for an unnamed renderer takes the first backend that creates successfully and
+     * stays silent about the ones that did not — so falling through an unavailable accelerated
+     * driver onto a slow path is invisible. Walk SDL's own driver list by name instead, in SDL's
+     * own order with the software renderer tried last, and report every rejection with its reason.
+     * The selected backend on a healthy system is the same one as before; only the diagnosis is
+     * new. A caller that named a driver through SDL's own hint keeps deciding on its own — that
+     * path is left exactly as SDL handles it, and the unnamed call also remains the last resort. */
+    SDL_Renderer *ren = NULL;
+    const char *driver_hint = SDL_GetHint(SDL_HINT_RENDER_DRIVER);
+    if (driver_hint == NULL || driver_hint[0] == '\0') {
+        int drivers = SDL_GetNumRenderDrivers();
+        for (int software_pass = 0; software_pass < 2 && !ren; software_pass++) {
+            for (int i = 0; i < drivers && !ren; i++) {
+                const char *name = SDL_GetRenderDriver(i);
+                if (name == NULL)
+                    continue;
+                if ((SDL_strcmp(name, SDL_SOFTWARE_RENDERER) == 0) != software_pass)
+                    continue;
+                ren = SDL_CreateRenderer(win, name);
+                if (!ren)
+                    fprintf(stderr, "[sdl] renderer '%s' unavailable: %s\n",
+                            name, SDL_GetError());
+            }
+        }
+    }
+    if (!ren)
+        ren = SDL_CreateRenderer(win, NULL);   /* SDL3: no index; NULL = pick a backend */
     if (!ren) {
         fprintf(stderr, "[sdl] SDL_CreateRenderer: %s\n", SDL_GetError());
         SDL_DestroyWindow(win);
@@ -256,7 +339,11 @@ int sdl_present_run(int scale)
         return -1;
     }
     SDL_SetRenderVSync(ren, 1);   /* replaces SDL2's PRESENTVSYNC flag; paces the loop to the display */
-    fprintf(stderr, "[sdl] renderer backend: %s\n", SDL_GetRendererName(ren));
+    const char *backend = SDL_GetRendererName(ren);
+    fprintf(stderr, "[sdl] renderer backend: %s\n", backend ? backend : "(unknown)");
+    if (backend && SDL_strcmp(backend, SDL_SOFTWARE_RENDERER) == 0)
+        fprintf(stderr, "[sdl] warning: presenting on the software renderer — no accelerated "
+                        "backend could be created (see the attempts logged above)\n");
 
     int cur_tex_w = ROTH_FB_W, cur_tex_h = ROTH_FB_H;
     int cur_log_w = ROTH_FB_W, cur_log_h = ROTH_FB_H;
@@ -312,6 +399,9 @@ int sdl_present_run(int scale)
     SDL_Texture *wtex = NULL;
     SDL_Texture *ctex = NULL;
     int wtex_w = 0, wtex_h = 0;
+    /* Serial of the world image currently resident in wtex; zero means the texture holds nothing
+     * yet. Channel serials start at one, so zero is never a valid frame. */
+    uint32_t wtex_serial = 0;
     /* Applied window state is owned here with the SDL objects and mirrored through a seqlock. */
     uint32_t cur_window_mode = ROTH_WINMODE_WINDOWED;
     uint32_t cur_present_mode = ROTH_PRESENT_FIFO;
@@ -456,9 +546,18 @@ int sdl_present_run(int scale)
             if (wtex) SDL_SetTextureScaleMode(wtex, SDL_SCALEMODE_NEAREST);
             wtex_w = (int)wf.w;
             wtex_h = (int)wf.h;
+            wtex_serial = 0;   /* a new texture holds no image yet */
         }
         if (world_ready && !wtex)
             world_ready = 0;   /* keep the engine frame opaque if the auxiliary texture failed */
+        /* The composite is an equality test between two engine planes, so it needs the copy this
+         * world image was paired with. Without one — no pairing yet, or engine dimensions that
+         * changed since — there is no plane of known identity to test the submitted baseline
+         * against, so the engine frame is presented on its own instead of guessed at. */
+        if (world_ready &&
+            (wf.paired_engine_pixels == NULL || wf.paired_engine_palette == NULL ||
+             wf.paired_engine_w != (uint32_t)w || wf.paired_engine_h != (uint32_t)h))
+            world_ready = 0;
 #endif
 
         int logical_w = aw, logical_h = ah;
@@ -475,9 +574,13 @@ int sdl_present_run(int scale)
             cur_log_w = logical_w; cur_log_h = logical_h;
         }
 #ifndef ROTH_VANILLA
-        roth_present_set_separate_cursor(
-            world_ready &&
-            wf.composite_mode == ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS);
+        /* Whenever a submitted world frame owns the canvas the host draws the cursor itself, so
+         * the engine layer is published cursor-free — the publisher leaves the sprite out of the
+         * frame while this is set, and the pairing copy is taken from that same frame. It has to
+         * hold for every composite mode: the pointer travels the whole canvas while the engine
+         * layer may cover only part of it, so a cursor baked into the engine layer would follow
+         * the wrong geometry. */
+        roth_present_set_separate_cursor(world_ready);
 #endif
 
         /* Palette (6-bit VGA DAC) -> ARGB8888 under the frame guard. Inside an active viewport,
@@ -487,21 +590,22 @@ int sdl_present_run(int scale)
          * opaque. */
         int n = w * h;
         int tries = 0;
-        uint32_t f0, f1;
+        int guard_changed;
         do {
-            f0 = rd_frame();
+            uint32_t f0 = rd_frame();
 #ifndef ROTH_VANILLA
+            /* The publisher announces which engine frame the shared buffer holds before it
+             * publishes the frame counter, so this identity describes the pixels read below. */
+            uint32_t s0 = roth_present_shared_engine_serial();
             if (world_ready) {
                 const uint8_t *engine_pixels = g_shm->pixels;
                 const uint8_t *engine_palette = g_shm->palette;
-                int paired_engine =
-                    wf.paired_engine_pixels != NULL &&
-                    wf.paired_engine_palette != NULL &&
-                    wf.paired_engine_w == (uint32_t)w &&
-                    wf.paired_engine_h == (uint32_t)h &&
-                    roth_present_engine_frame_published() <
-                        wf.paired_engine_serial;
-                if (paired_engine) {
+                /* Both planes have to come from the same engine frame. The shared buffer qualifies
+                 * only while it still holds the very frame this world image was paired with — worth
+                 * preferring, since it carries the freshest overlay pass composed onto that frame.
+                 * On anything else take the paired copy: the same published frame, captured whole
+                 * at the publish that named it, so it always matches the baseline. */
+                if (s0 != wf.paired_engine_serial) {
                     engine_pixels = wf.paired_engine_pixels;
                     engine_palette = wf.paired_engine_palette;
                 }
@@ -544,14 +648,26 @@ int sdl_present_run(int scale)
                     rgb[i] = 0xff000000u | (r << 16) | (g << 8) | b;
                 }
             }
-            f1 = rd_frame();
-        } while (f1 != f0 && ++tries < 2);
+            guard_changed = rd_frame() != f0;
+#ifndef ROTH_VANILLA
+            /* Re-check the identity alongside the counter: a publish that landed during the walk
+             * invalidates both the pixels and the source choice made from them. */
+            guard_changed = guard_changed ||
+                            roth_present_shared_engine_serial() != s0;
+#endif
+        } while (guard_changed && ++tries < 2);
 
         SDL_UpdateTexture(tex, NULL, rgb, w * 4);
         SDL_RenderClear(ren);
 #ifndef ROTH_VANILLA
         if (world_ready) {
-            SDL_UpdateTexture(wtex, NULL, wf.rgba, (int)wf.w * 4);
+            /* The world image only changes when a new frame is published, and the producer never
+             * writes the slot the consumer holds — so an unchanged serial means unchanged pixels
+             * and the full-canvas upload can be skipped entirely. */
+            if (wf.serial != wtex_serial) {
+                SDL_UpdateTexture(wtex, NULL, wf.rgba, (int)wf.w * 4);
+                wtex_serial = wf.serial;
+            }
             SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
             if (wf.composite_mode == ROTH_COMPOSITE_ENGINE_CENTERED_OVER_CANVAS) {
                 /* The source owns the logical canvas. Preserve the engine display aspect and
@@ -567,61 +683,12 @@ int sdl_present_run(int scale)
                 SDL_RenderTexture(ren, wtex, NULL, NULL);
                 SDL_RenderTexture(ren, tex, NULL, &engine_dst);
 
-                /* The engine normally bakes its software cursor into the 8bpp
-                 * frame. Centered-canvas mode keeps that frame cursor-free and
-                 * maps the cursor hotspot across the complete canvas instead. */
-                struct sdl_cursor_snapshot cursor;
-                if (read_cursor_snapshot(&cursor)) {
-                    static uint32_t cursor_rgba[ROTH_CURSOR_MAX];
-                    for (uint32_t i = 0; i < ROTH_CURSOR_MAX; i++)
-                        cursor_rgba[i] = 0;
-                    for (uint32_t y = 0; y < cursor.h; y++) {
-                        for (uint32_t x = 0; x < cursor.w; x++) {
-                            uint8_t idx = cursor.pixels[y * cursor.w + x];
-                            if (idx != 0) {
-                                uint8_t r = g_shm->palette[idx * 3 + 0] << 2;
-                                uint8_t g = g_shm->palette[idx * 3 + 1] << 2;
-                                uint8_t b = g_shm->palette[idx * 3 + 2] << 2;
-                                cursor_rgba[y * ROTH_CURSOR_MAX_W + x] =
-                                    0xff000000u | (r << 16) | (g << 8) | b;
-                            }
-                        }
-                    }
-                    if (!ctex) {
-                        ctex = SDL_CreateTexture(
-                            ren, SDL_PIXELFORMAT_ARGB8888,
-                            SDL_TEXTUREACCESS_STREAMING,
-                            ROTH_CURSOR_MAX_W, ROTH_CURSOR_MAX_H);
-                        if (ctex) {
-                            SDL_SetTextureScaleMode(ctex, SDL_SCALEMODE_NEAREST);
-                            SDL_SetTextureBlendMode(ctex, SDL_BLENDMODE_BLEND);
-                        }
-                    }
-                    if (ctex) {
-                        float pixel_scale_x = engine_w / (float)w;
-                        float pixel_scale_y = engine_h / (float)h;
-                        float hotspot_x =
-                            (float)cursor.mouse_x * (float)logical_w / (float)w;
-                        float hotspot_y =
-                            (float)cursor.mouse_y * (float)logical_h / (float)h;
-                        SDL_FRect cursor_src = {
-                            0.0f, 0.0f, (float)cursor.w, (float)cursor.h
-                        };
-                        SDL_FRect cursor_dst = {
-                            hotspot_x -
-                                (float)cursor.hotspot_x * pixel_scale_x,
-                            hotspot_y -
-                                (float)cursor.hotspot_y * pixel_scale_y,
-                            (float)cursor.w * pixel_scale_x,
-                            (float)cursor.h * pixel_scale_y
-                        };
-                        SDL_UpdateTexture(
-                            ctex, NULL, cursor_rgba,
-                            ROTH_CURSOR_MAX_W * (int)sizeof(uint32_t));
-                        SDL_RenderTexture(
-                            ren, ctex, &cursor_src, &cursor_dst);
-                    }
-                }
+                /* The engine layer covers only the centered rectangle, so its pixels scale by
+                 * that rectangle while the pointer still travels the whole canvas. */
+                draw_engine_cursor(ren, &ctex,
+                                   engine_w / (float)w, engine_h / (float)h,
+                                   (float)logical_w / (float)w,
+                                   (float)logical_h / (float)h);
             } else {
                 /* Map the engine-space viewport into the logical presentation rectangle. */
                 float sx = (float)aw / (float)w, sy = (float)ah / (float)h;
@@ -629,6 +696,9 @@ int sdl_present_run(int scale)
                                    (float)wf.vw * sx, (float)wf.vh * sy };
                 SDL_RenderTexture(ren, wtex, NULL, &wdst);
                 SDL_RenderTexture(ren, tex, NULL, NULL);
+                /* The engine layer covers the whole presentation rectangle here, so one scale
+                 * serves both: the cursor lands exactly where the engine would have drawn it. */
+                draw_engine_cursor(ren, &ctex, sx, sy, sx, sy);
             }
         } else
 #endif

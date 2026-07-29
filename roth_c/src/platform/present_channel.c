@@ -50,6 +50,11 @@ static int g_consumer = 1;                 /* present thread only */
 static unsigned g_ready = 2;               /* slot index plus WSLOT_FRESH */
 static uint32_t g_frame_serial;            /* GAME thread only */
 static int g_pending;                       /* GAME thread: producer awaits the next page flip */
+/* Identity of the engine page the staged world belongs to, zero while none is armed. The publish
+ * beat preempts the game thread asynchronously, so this doubles as the producer-slot interlock:
+ * pairing copies and publishes only while it is armed, and a submission disarms it before it
+ * touches the slot. */
+static uint32_t g_pair_serial;
 static int g_seen;                         /* present thread only */
 static int g_stale;                        /* present thread only */
 static uintptr_t g_owner;                  /* per-plugin roth_api_v1 address, zero when unowned */
@@ -57,7 +62,7 @@ static uint32_t g_active;                  /* zero after withdraw/unload */
 static uint32_t g_engine_w = 320;
 static uint32_t g_engine_h = 200;
 static uint32_t g_separate_cursor;
-static uint32_t g_published_engine_serial;
+static uint32_t g_shared_engine_serial;
 static __thread int g_in_present_callback;
 
 void roth_present_set_engine_dimensions(uint32_t w, uint32_t h)
@@ -164,6 +169,12 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
     if (owner != 0 && owner != (uintptr_t)api)
         return ROTH_ERR_NOT_OWNER;
 
+    /* Disarm before anything in the producer slot moves. The publish beat runs on this thread as an
+     * asynchronous preemption and pairs only while armed, so it cannot observe the slot mid-write —
+     * including the reallocation that may move the pixels a consumer would otherwise be handed. The
+     * barrier is two-sided on purpose: neither the store below nor the writes after it may cross it. */
+    __atomic_store_n(&g_pair_serial, 0u, __ATOMIC_SEQ_CST);
+
     struct wslot *s = &g_slot[g_producer];
     uint32_t need = frame->w * frame->h;
     if (s->cap_px < need) {
@@ -216,10 +227,10 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
     s->transparent_index = frame->transparent_index;
     s->serial = ++g_frame_serial;
 
-    /* Keep the world private until the engine finishes the page that contains
-     * its matching HUD/chrome. Publishing here lets the present thread combine
-     * this new world with the previous page-flip snapshot. A second submission
-     * before a flip simply replaces the staged world with the fresher one. */
+    /* Keep the world private until the page that contains its matching HUD/chrome
+     * is both finished and published. Publishing here lets the present thread
+     * combine this new world with an engine layer from some other page. A second
+     * submission before that simply replaces the staged world with the fresher one. */
     g_pending = 1;
 
     /* A Windows timer fire inside the plugin or graphics driver is queued for
@@ -229,11 +240,16 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
     return ROTH_OK;
 }
 
-void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t h,
-                                    const uint8_t *palette, uint32_t serial)
+/* The engine finished the page the staged world belongs to. Only the first completed page after a
+ * submission can be that page, so a later one leaves the arming alone: the staged world carries the
+ * baseline of the page it was drawn for, and no other page may be paired with it. Reserving the copy
+ * here is deliberate — the copy itself is taken on the publish beat, which preempts the game thread
+ * and therefore cannot allocate. */
+void roth_present_note_engine_page(uint32_t serial, uint32_t w, uint32_t h)
 {
-    if (!g_pending || !pixels || !palette || w == 0 || h == 0 ||
-        (uint64_t)w * h > UINT32_MAX)
+    if (!g_pending || serial == 0 || w == 0 || h == 0 ||
+        (uint64_t)w * h > UINT32_MAX ||
+        __atomic_load_n(&g_pair_serial, __ATOMIC_SEQ_CST) != 0)
         return;
 
     struct wslot *s = &g_slot[g_producer];
@@ -247,12 +263,34 @@ void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t 
         s->paired_engine = next;
         s->paired_engine_cap = need;
     }
+    __atomic_store_n(&g_pair_serial, serial, __ATOMIC_SEQ_CST);
+}
+
+/* The publish site hands over the frame it is putting on the shared buffer. Taking the pairing copy
+ * from there — after every overlay the compose seam draws and after the staged frame is blitted
+ * whole — makes the engine layer a consumer composites against the published image of that page
+ * rather than a private snapshot of part of it. The armed identity is what makes the copy legal: a
+ * page the staged world was not drawn against publishes without pairing, and the world waits for the
+ * page that was. */
+void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t h,
+                                    const uint8_t *palette, uint32_t serial)
+{
+    if (!g_pending || !pixels || !palette || serial == 0 || w == 0 || h == 0 ||
+        (uint64_t)w * h > UINT32_MAX ||
+        __atomic_load_n(&g_pair_serial, __ATOMIC_SEQ_CST) != serial)
+        return;
+
+    struct wslot *s = &g_slot[g_producer];
+    uint32_t need = w * h;
+    if (s->paired_engine_cap < need)
+        return;             /* published larger than the armed page reserved; no allocation here */
     memcpy(s->paired_engine, pixels, need);
     memcpy(s->paired_palette, palette, sizeof s->paired_palette);
     s->paired_engine_w = w;
     s->paired_engine_h = h;
     s->paired_engine_serial = serial;
     g_pending = 0;
+    __atomic_store_n(&g_pair_serial, 0u, __ATOMIC_SEQ_CST);
 
     __atomic_store_n(&g_active, 1u, __ATOMIC_RELEASE);
     unsigned prev = __atomic_exchange_n(&g_ready, (unsigned)g_producer | WSLOT_FRESH,
@@ -260,14 +298,16 @@ void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t 
     g_producer = (int)(prev & WSLOT_IDX_MASK);
 }
 
-void roth_present_note_engine_frame_published(uint32_t serial)
+/* Names the engine frame the shared buffer holds right now — published before the shared frame
+ * counter, so a consumer that observes the counter can trust the identity it reads next. */
+void roth_present_note_shared_engine_serial(uint32_t serial)
 {
-    __atomic_store_n(&g_published_engine_serial, serial, __ATOMIC_RELEASE);
+    __atomic_store_n(&g_shared_engine_serial, serial, __ATOMIC_RELEASE);
 }
 
-uint32_t roth_present_engine_frame_published(void)
+uint32_t roth_present_shared_engine_serial(void)
 {
-    return __atomic_load_n(&g_published_engine_serial, __ATOMIC_ACQUIRE);
+    return __atomic_load_n(&g_shared_engine_serial, __ATOMIC_ACQUIRE);
 }
 
 int32_t roth_present_withdraw_world_frame(const struct roth_api_v1 *api)
@@ -277,6 +317,7 @@ int32_t roth_present_withdraw_world_frame(const struct roth_api_v1 *api)
     if (__atomic_load_n(&g_owner, __ATOMIC_ACQUIRE) != (uintptr_t)api)
         return ROTH_ERR_NOT_OWNER;
     g_pending = 0;
+    __atomic_store_n(&g_pair_serial, 0u, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_active, 0u, __ATOMIC_RELEASE);
     return ROTH_OK;
 }
@@ -299,6 +340,7 @@ void roth_present_release_owner(const struct roth_api_v1 *api)
     if (!api || __atomic_load_n(&g_owner, __ATOMIC_ACQUIRE) != (uintptr_t)api)
         return;
     g_pending = 0;
+    __atomic_store_n(&g_pair_serial, 0u, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_active, 0u, __ATOMIC_RELEASE);
     uintptr_t expected = (uintptr_t)api;
     __atomic_compare_exchange_n(&g_owner, &expected, (uintptr_t)0, 0,
@@ -326,6 +368,7 @@ int roth_present_acquire(struct roth_present_frame *out)
     if (!g_seen || s->serial == 0 || g_stale >= WSTALE_LIMIT)
         return 0;
     out->rgba = s->px;
+    out->serial = s->serial;
     out->w = s->w;
     out->h = s->h;
     out->vx = s->vx;
