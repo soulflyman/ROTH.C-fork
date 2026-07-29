@@ -41,7 +41,9 @@ int32_t roth_window_get_display_mode(const struct roth_api_v1 *api, int32_t idx,
  * dimensions. */
 struct roth_present_frame {
     const uint32_t *rgba;
-    uint32_t serial;            /* identifies the world image in rgba; never zero for a live frame */
+    uint32_t serial;            /* identifies the IMAGE in rgba, not the submission that carried it:
+                                 * a producer re-sending an unchanged image keeps the serial it had.
+                                 * Never zero for a live frame. */
     uint32_t w, h;
     int32_t vx, vy;
     uint32_t vw, vh;
@@ -66,9 +68,13 @@ int roth_present_acquire(struct roth_present_frame *out);
  * bytes that reach the shared frame, and only while that page is still the one
  * being published. The world reaches the consumer with that copy, so the engine
  * layer a composite tests against is the published image of the same frame,
- * overlays and all. The shared-frame publisher separately names the engine frame
- * its live copy currently holds, so a consumer can tell whether that copy is the
- * same frame the world was paired with before compositing the two together. */
+ * overlays and all. A page that is published twice with no flip between it is a
+ * screen the engine has stopped drawing — a window holding the game — and the
+ * publish site pairs a repeated submission with it directly, since no flip will
+ * ever come to name it. The shared-frame publisher separately names the engine
+ * frame its live copy currently holds, so a consumer can tell whether that copy
+ * is the same frame the world was paired with before compositing the two
+ * together. */
 void roth_present_note_engine_page(uint32_t serial, uint32_t w, uint32_t h);
 void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t h,
                                     const uint8_t *palette, uint32_t serial);

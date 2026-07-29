@@ -314,8 +314,23 @@ int sdl_present_run(int scale)
      * path is left exactly as SDL handles it, and the unnamed call also remains the last resort. */
     SDL_Renderer *ren = NULL;
     const char *driver_hint = SDL_GetHint(SDL_HINT_RENDER_DRIVER);
-    if (driver_hint == NULL || driver_hint[0] == '\0') {
-        int drivers = SDL_GetNumRenderDrivers();
+    int drivers = SDL_GetNumRenderDrivers();
+    /* The list first, so a log that reports a backend still says what else was there and in what
+     * order it would have been tried. Silence on its own is not evidence of anything. */
+    fprintf(stderr, "[sdl] renderer drivers:");
+    for (int i = 0; i < drivers; i++) {
+        const char *name = SDL_GetRenderDriver(i);
+        fprintf(stderr, " %s", name ? name : "(unnamed)");
+    }
+    if (drivers <= 0)
+        fprintf(stderr, " (none)");
+    fprintf(stderr, "\n");
+    if (driver_hint != NULL && driver_hint[0] != '\0') {
+        /* A caller that named a driver keeps deciding: SDL applies the request and reports its own
+         * attempts, so say that the walk was skipped rather than leaving its absence unexplained. */
+        fprintf(stderr, "[sdl] renderer driver named by hint: '%s' (SDL chooses; the attempts below "
+                        "are its own)\n", driver_hint);
+    } else {
         for (int software_pass = 0; software_pass < 2 && !ren; software_pass++) {
             for (int i = 0; i < drivers && !ren; i++) {
                 const char *name = SDL_GetRenderDriver(i);
@@ -329,6 +344,8 @@ int sdl_present_run(int scale)
                             name, SDL_GetError());
             }
         }
+        if (!ren)
+            fprintf(stderr, "[sdl] no named renderer could be created; letting SDL choose\n");
     }
     if (!ren)
         ren = SDL_CreateRenderer(win, NULL);   /* SDL3: no index; NULL = pick a backend */

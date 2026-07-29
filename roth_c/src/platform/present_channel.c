@@ -55,8 +55,23 @@ static int g_pending;                       /* GAME thread: producer awaits the 
  * pairing copies and publishes only while it is armed, and a submission disarms it before it
  * touches the slot. */
 static uint32_t g_pair_serial;
+/* The engine only finishes pages while it is drawing. A window that holds the game stops it, and the
+ * page already on the screen stays there while the producer keeps re-sending the frame it drew
+ * against that page. These two name that situation: the page a repeat submission may be paired with
+ * (zero while none may, which is what makes it the second half of the producer-slot interlock), and
+ * the page the previous publish put on the shared buffer. */
+static uint32_t g_hold_page;
+static uint32_t g_published_page;          /* publish beat only */
+/* Serial of the pixels the producer last staged. A repeat of the same image keeps it, so a consumer
+ * that already holds that image can tell it apart from a new one and skip re-uploading it. */
+static uint32_t g_image_serial;            /* GAME thread only */
+/* Submissions accepted so far. The consumer's crash-safety watchdog asks whether the producer has
+ * stopped, and this is what answers it: a producer that is still submitting has not stopped, even
+ * during a stretch where nothing it sends can be paired yet. */
+static uint32_t g_submit_seq;
 static int g_seen;                         /* present thread only */
 static int g_stale;                        /* present thread only */
+static uint32_t g_seen_submits;            /* present thread only */
 static uintptr_t g_owner;                  /* per-plugin roth_api_v1 address, zero when unowned */
 static uint32_t g_active;                  /* zero after withdraw/unload */
 static uint32_t g_engine_w = 320;
@@ -81,6 +96,36 @@ void roth_present_set_separate_cursor(int active)
 int roth_present_separate_cursor(void)
 {
     return __atomic_load_n(&g_separate_cursor, __ATOMIC_ACQUIRE) != 0;
+}
+
+/* Row-wise compare of two 8-bit or packed planes with independent strides. */
+static int planes_equal(const uint8_t *a, uint32_t a_pitch,
+                        const uint8_t *b, uint32_t b_pitch,
+                        uint32_t row_bytes, uint32_t rows)
+{
+    for (uint32_t y = 0; y < rows; y++)
+        if (memcmp(a + (size_t)y * a_pitch, b + (size_t)y * b_pitch, row_bytes) != 0)
+            return 0;
+    return 1;
+}
+
+/* Room for a copy of one engine frame at the dimensions the host is presenting. Reserved on the
+ * game thread because the publish beat, which takes the copy, may not allocate. */
+static int reserve_engine_room(struct wslot *s)
+{
+    uint32_t w = __atomic_load_n(&g_engine_w, __ATOMIC_ACQUIRE);
+    uint32_t h = __atomic_load_n(&g_engine_h, __ATOMIC_ACQUIRE);
+    uint32_t need = w * h;              /* host-published frame dimensions; both are bounded */
+    if (w == 0 || h == 0 || (uint64_t)w * h > UINT32_MAX)
+        return 0;
+    if (s->paired_engine_cap < need) {
+        uint8_t *next = (uint8_t *)realloc(s->paired_engine, need);
+        if (!next)
+            return 0;
+        s->paired_engine = next;
+        s->paired_engine_cap = need;
+    }
+    return 1;
 }
 
 static int clip_viewport(const struct roth_world_frame_v1 *f,
@@ -174,9 +219,28 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
      * including the reallocation that may move the pixels a consumer would otherwise be handed. The
      * barrier is two-sided on purpose: neither the store below nor the writes after it may cross it. */
     __atomic_store_n(&g_pair_serial, 0u, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_hold_page, 0u, __ATOMIC_SEQ_CST);
 
     struct wslot *s = &g_slot[g_producer];
     uint32_t need = frame->w * frame->h;
+    /* A producer whose picture has not moved re-sends the one it sent before, and reading the staged
+     * copy back is what tells that apart from a new picture. The comparison pays for itself: it
+     * stops at the first row that differs, which is at once for anything freshly drawn, and where it
+     * does run to the end it has replaced a copy of the very same bytes. What it buys is identity —
+     * a repeat keeps the serial it had, so a consumer already holding that image does not take it
+     * again — and the knowledge that the plane the engine layer has to match has not moved either. */
+    uint32_t page = __atomic_load_n(&g_shared_engine_serial, __ATOMIC_ACQUIRE);
+    int repeatable = s->serial != 0 && s->cap_px >= need &&
+                     s->w == frame->w && s->h == frame->h &&
+                     s->vx == vx && s->vy == vy && s->vw == vw && s->vh == vh &&
+                     s->composite_mode == frame->composite_mode &&
+                     s->transparent_index == frame->transparent_index &&
+                     s->has_engine_base == (uint32_t)has_engine_base;
+    int same_image = repeatable &&
+                     planes_equal((const uint8_t *)s->px, row_bytes,
+                                  (const uint8_t *)frame->pixels, pitch, row_bytes, frame->h);
+    int same_base = repeatable && !has_engine_base;
+
     if (s->cap_px < need) {
         uint32_t *np = (uint32_t *)realloc(s->px, (size_t)need * sizeof(uint32_t));
         if (!np)
@@ -184,15 +248,21 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
         s->px = np;
         s->cap_px = need;
     }
-    const uint8_t *src = (const uint8_t *)frame->pixels;
-    uint8_t *dst = (uint8_t *)s->px;
-    for (uint32_t y = 0; y < frame->h; y++)
-        memcpy(dst + (size_t)y * row_bytes, src + (size_t)y * pitch, row_bytes);
+    if (!same_image) {
+        const uint8_t *src = (const uint8_t *)frame->pixels;
+        uint8_t *dst = (uint8_t *)s->px;
+        for (uint32_t y = 0; y < frame->h; y++)
+            memcpy(dst + (size_t)y * row_bytes, src + (size_t)y * pitch, row_bytes);
+    }
 
     if (has_engine_base) {
         uint32_t need_base = vw * vh;
         uint32_t source_x = (uint32_t)((int64_t)vx - frame->vx);
         uint32_t source_y = (uint32_t)((int64_t)vy - frame->vy);
+        const uint8_t *base_src =
+            engine_base + (size_t)source_y * engine_base_pitch + source_x;
+        same_base = repeatable && s->engine_base != NULL && s->engine_base_cap >= need_base &&
+                    planes_equal(s->engine_base, vw, base_src, engine_base_pitch, vw, vh);
         if (s->engine_base_cap < need_base) {
             uint8_t *next = (uint8_t *)realloc(s->engine_base, need_base);
             if (!next)
@@ -200,11 +270,12 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
             s->engine_base = next;
             s->engine_base_cap = need_base;
         }
-        for (uint32_t y = 0; y < vh; y++) {
-            memcpy(s->engine_base + (size_t)y * vw,
-                   engine_base + (size_t)(source_y + y) * engine_base_pitch +
-                       source_x,
-                   vw);
+        if (!same_base) {
+            for (uint32_t y = 0; y < vh; y++) {
+                memcpy(s->engine_base + (size_t)y * vw,
+                       base_src + (size_t)y * engine_base_pitch,
+                       vw);
+            }
         }
     }
 
@@ -225,13 +296,23 @@ int32_t roth_present_submit_world_frame(const struct roth_api_v1 *api,
     s->has_engine_base = (uint32_t)has_engine_base;
     s->composite_mode = frame->composite_mode;
     s->transparent_index = frame->transparent_index;
-    s->serial = ++g_frame_serial;
+    if (!same_image)
+        g_image_serial = ++g_frame_serial;
+    s->serial = g_image_serial;
 
     /* Keep the world private until the page that contains its matching HUD/chrome
      * is both finished and published. Publishing here lets the present thread
      * combine this new world with an engine layer from some other page. A second
      * submission before that simply replaces the staged world with the fresher one. */
     g_pending = 1;
+    /* A world whose baseline repeats the one already staged is a world nothing has moved under: the
+     * plane the engine layer must match is the same plane, so the page carrying it is the page on
+     * the shared buffer now. Name that page — the publish beat pairs the two only if it is still the
+     * one being published — and say so only once the slot is whole and the room a copy of it needs
+     * is reserved, so a beat landing mid-submission still finds nothing it may act on. */
+    if (page != 0 && same_base && reserve_engine_room(s))
+        __atomic_store_n(&g_hold_page, page, __ATOMIC_SEQ_CST);
+    __atomic_add_fetch(&g_submit_seq, 1u, __ATOMIC_RELEASE);
 
     /* A Windows timer fire inside the plugin or graphics driver is queued for
      * safety. Submission is the first narrow host boundary after that work, so
@@ -269,28 +350,54 @@ void roth_present_note_engine_page(uint32_t serial, uint32_t w, uint32_t h)
 /* The publish site hands over the frame it is putting on the shared buffer. Taking the pairing copy
  * from there — after every overlay the compose seam draws and after the staged frame is blitted
  * whole — makes the engine layer a consumer composites against the published image of that page
- * rather than a private snapshot of part of it. The armed identity is what makes the copy legal: a
- * page the staged world was not drawn against publishes without pairing, and the world waits for the
- * page that was. */
+ * rather than a private snapshot of part of it. Two things make a copy legal, and a frame needs
+ * only one of them:
+ *
+ *   - the page flip armed this page for the staged world, which is how a world drawn for a page the
+ *     engine is still finishing reaches the screen with that page and no other; or
+ *   - the engine has now published the same page twice with no flip between, and the staged world
+ *     repeats the baseline it was staged with. Nothing has moved: the page on the screen is the one
+ *     that baseline was drawn into. This is the case a window holding the game produces — the
+ *     engine stops finishing pages, so no flip can ever arm one, while the producer keeps
+ *     re-sending — and without it such a world would wait for a page that never comes.
+ *
+ * A page the staged world was not drawn against still publishes without pairing, and the world
+ * waits for the page that was. */
 void roth_present_pair_engine_frame(const uint8_t *pixels, uint32_t w, uint32_t h,
                                     const uint8_t *palette, uint32_t serial)
 {
-    if (!g_pending || !pixels || !palette || serial == 0 || w == 0 || h == 0 ||
-        (uint64_t)w * h > UINT32_MAX ||
-        __atomic_load_n(&g_pair_serial, __ATOMIC_SEQ_CST) != serial)
+    if (!pixels || !palette || serial == 0 || w == 0 || h == 0 ||
+        (uint64_t)w * h > UINT32_MAX)
+        return;
+
+    uint32_t prev_page = g_published_page;
+    g_published_page = serial;
+
+    uint32_t armed = __atomic_load_n(&g_pair_serial, __ATOMIC_SEQ_CST);
+    int held = armed == 0u && serial == prev_page &&
+               __atomic_load_n(&g_hold_page, __ATOMIC_SEQ_CST) == serial;
+    if (!g_pending || (armed != serial && !held))
         return;
 
     struct wslot *s = &g_slot[g_producer];
     uint32_t need = w * h;
     if (s->paired_engine_cap < need)
-        return;             /* published larger than the armed page reserved; no allocation here */
-    memcpy(s->paired_engine, pixels, need);
+        return;             /* published larger than was reserved for it; no allocation here */
+    /* The same page published again is the same picture: what the slot holds was copied from a
+     * publish of this very page, and while that page is still the one on the shared buffer a
+     * consumer reads the buffer itself in preference to the copy. */
+    if (s->paired_engine_serial != serial || s->paired_engine_w != w ||
+        s->paired_engine_h != h)
+        memcpy(s->paired_engine, pixels, need);
     memcpy(s->paired_palette, palette, sizeof s->paired_palette);
     s->paired_engine_w = w;
     s->paired_engine_h = h;
     s->paired_engine_serial = serial;
     g_pending = 0;
     __atomic_store_n(&g_pair_serial, 0u, __ATOMIC_SEQ_CST);
+    /* One publish per submission either way: a repeat that has already been paired waits for the
+     * producer to send again, so a producer that stops sending still runs out of frames. */
+    __atomic_store_n(&g_hold_page, 0u, __ATOMIC_SEQ_CST);
 
     __atomic_store_n(&g_active, 1u, __ATOMIC_RELEASE);
     unsigned prev = __atomic_exchange_n(&g_ready, (unsigned)g_producer | WSLOT_FRESH,
@@ -318,6 +425,7 @@ int32_t roth_present_withdraw_world_frame(const struct roth_api_v1 *api)
         return ROTH_ERR_NOT_OWNER;
     g_pending = 0;
     __atomic_store_n(&g_pair_serial, 0u, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_hold_page, 0u, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_active, 0u, __ATOMIC_RELEASE);
     return ROTH_OK;
 }
@@ -341,6 +449,7 @@ void roth_present_release_owner(const struct roth_api_v1 *api)
         return;
     g_pending = 0;
     __atomic_store_n(&g_pair_serial, 0u, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_hold_page, 0u, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_active, 0u, __ATOMIC_RELEASE);
     uintptr_t expected = (uintptr_t)api;
     __atomic_compare_exchange_n(&g_owner, &expected, (uintptr_t)0, 0,
@@ -353,14 +462,19 @@ int roth_present_acquire(struct roth_present_frame *out)
         return 0;
 
     unsigned r = __atomic_load_n(&g_ready, __ATOMIC_ACQUIRE);
+    uint32_t submits = __atomic_load_n(&g_submit_seq, __ATOMIC_ACQUIRE);
     if (r & WSLOT_FRESH) {
         unsigned got = __atomic_exchange_n(&g_ready, (unsigned)g_consumer, __ATOMIC_ACQ_REL);
         g_consumer = (int)(got & WSLOT_IDX_MASK);
         g_seen = 1;
         g_stale = 0;
-    } else if (g_seen) {
+    } else if (g_seen && submits == g_seen_submits) {
+        /* Nothing new to show AND nothing new sent. A producer that is still submitting is holding
+         * a picture on purpose — a window over a stopped game is the ordinary reason — and the limit
+         * below is there for one that has stopped answering at all, so only silence counts toward it. */
         g_stale++;
     }
+    g_seen_submits = submits;
     if (!__atomic_load_n(&g_active, __ATOMIC_ACQUIRE))
         return 0;
 
