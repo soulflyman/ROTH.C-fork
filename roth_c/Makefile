@@ -164,16 +164,40 @@ ifeq ($(CROSS),mingw)
   endif
 endif
 
+# --- verified-zone dynamic visibility ------------------------------------------------------------
+# The engine (src/engine) and data (src/data) TUs are the RECONSTRUCTED 1996 program: their global
+# names ARE the original's names, and a few of them collide with names the C library and the bundled
+# SDL3 resolve dynamically — the reconstructed Watcom CRT owns a global literally called `environ`,
+# which is also the symbol SDL reads the process environment through. An executable sits first in the
+# global lookup scope, so ANY such name it exports silently preempts the library's own definition:
+# SDL binds `environ` to 68 bytes of game data, sees an empty environment, and every SDL_* variable
+# goes inert. Compiling those TUs with hidden dynamic visibility stops the executable exporting them,
+# so libraries resolve their own symbols again.
+# This is a DYNAMIC-LINKING property only, and deliberately narrow:
+#   * the sources are untouched — no attribute, no rename; the reconstruction keeps its names;
+#   * .symtab is unaffected, so nm/addr2line/gdb still see every symbol;
+#   * only .dynsym loses them, and nothing consumes them there — plugins reach the engine through
+#     the SDK's function-pointer table, never by resolving a symbol out of the executable;
+#   * the host TUs are NOT in scope, so the ordinary libc copy relocations (stdout/stderr) still
+#     export exactly as they do in every glibc program.
+# ELF-only: PE has no visibility model (exports there are opt-in via __declspec), so the flag is
+# empty on the MinGW axis and that build is unchanged.
+ifeq ($(CROSS),mingw)
+  ZONE_VIS :=
+else
+  ZONE_VIS := -fvisibility=hidden
+endif
+
 # flag matrix:
 #   STANDALONE_CFLAGS  the verified engine TUs + traps (absolute/pinned-arena addressing; -DROTH_STANDALONE
 #                   + -ffunction-sections/--gc-sections so the unreferenced original-image bridge + int-trap
 #                   servicer garbage-collect away)
 #   MAINIF_CFLAGS   main.c compiled -DROTH_STANDALONE (main_if.o = the image-free program entry; NOT sectioned)
-#   DATAC_CFLAGS    the datac data-as-C TUs (sectioned, no -DROTH_STANDALONE)
+#   DATAC_CFLAGS    the datac data-as-C TUs (sectioned, no -DROTH_STANDALONE, zone visibility)
 #   plain CFLAGS    the always-native host services (dos/dpmi/audio/os_api/…) + boot
 STANDALONE_CFLAGS := $(CFLAGS) -DROTH_STANDALONE -ffunction-sections -fdata-sections
 MAINIF_CFLAGS     := $(CFLAGS) -DROTH_STANDALONE
-DATAC_CFLAGS      := $(CFLAGS) -ffunction-sections -fdata-sections
+DATAC_CFLAGS      := $(CFLAGS) -ffunction-sections -fdata-sections $(ZONE_VIS)
 
 # --- override-registry pad ----------------------------------------------------------------------
 # MODDABLE flavor: the ENGINE objects get -fpatchable-function-entry=5,0: five NOP bytes AFTER
@@ -191,6 +215,8 @@ ENGINE_STANDALONE_CFLAGS := $(STANDALONE_CFLAGS)
 else
 ENGINE_STANDALONE_CFLAGS := $(STANDALONE_CFLAGS) -fpatchable-function-entry=5,0
 endif
+# ...and the engine zone carries the same hidden dynamic visibility as the data zone (see ZONE_VIS).
+ENGINE_STANDALONE_CFLAGS += $(ZONE_VIS)
 
 LIFT_TUS := renderer raw_commands math_util memory_pool collision_physics text_font automap doors savegame player dbase100 gdv_cutscene weapon_combat inventory game_core audio das_assets input blit_2d video_display render_world menu_hud_ui map_load dialogue_ui file_config dos_runtime entity_ai dpmi_dos_os
 STANDALONE_LIFT_OBJS := $(addprefix $(BUILD)/,$(addsuffix _if.o,$(LIFT_TUS)))
