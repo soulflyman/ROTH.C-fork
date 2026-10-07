@@ -21,9 +21,9 @@ extern "C" {
 
 /* ---- versions ------------------------------------------------------------ */
 #define ROTH_SDK_MAJOR 0
-#define ROTH_SDK_MINOR 7
+#define ROTH_SDK_MINOR 8
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 7
+#define ROTH_ABI_MINOR 8
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
@@ -1382,6 +1382,13 @@ struct roth_window_v1 {
     int32_t (ROTH_CDECL *get_display_mode_count)(const struct roth_api_v1 *);  /* number of modes in the informational current-display snapshot */
     int32_t (ROTH_CDECL *get_display_mode)(const struct roth_api_v1 *, int32_t, uint32_t *, uint32_t *, uint32_t *);  /* read one snapshot entry; refresh is millihertz and output pointers may be NULL. Returns ROTH_ERR_RANGE for an invalid index */
 };
+/* roth_interfaces_v1: The plugin-to-plugin interface registry. A plugin publishes a named, versioned pointer to a table it owns, and any other plugin looks it up by name; the host stores the name and the pointer and never interprets what the pointer leads to. The contract behind a name (the table layout, its calling contexts, what a version number means) belongs to the publisher, who documents it and ships a header for it. Names are reverse-DNS like plugin ids, and a breaking change takes a new name. publish, lookup and withdraw are MAIN or GAME context only. Every on_load completes before the first on_game_ram_ready, so a plugin that publishes in on_load is found by a lookup made from on_game_ram_ready or later, whatever the load order; a lookup for a name nobody has published returns NULL, and that is the ordinary answer when the publisher is not installed. The published table must stay valid until the publisher's on_unload returns, when the host withdraws whatever the plugin still has published. Plugins unload in reverse load order, so a consumer must not call through a looked-up interface from its own on_unload. */
+struct roth_interfaces_v1 {
+    uint32_t struct_size;  /* sizeof(struct roth_interfaces_v1) as the host built it (feature-detect newer methods) */
+    int32_t (ROTH_CDECL *publish)(const struct roth_api_v1 *, const char *, uint32_t, const void *);  /* publish iface under name (1 to 63 characters, containing a '.'; the host copies it). version is the publisher's own revision number for the table. Publishing a name the caller already holds replaces the pointer and version. Returns ROTH_ERR_NOT_OWNER when another plugin holds the name, ROTH_ERR_INVALID for a bad name or a NULL iface, and ROTH_ERR_NOMEM when the registry is full */
+    const void *(ROTH_CDECL *lookup)(const struct roth_api_v1 *, const char *, uint32_t *);  /* the pointer published under name, or NULL when nothing is. Writes the published version through version when it is not NULL and the name was found */
+    int32_t (ROTH_CDECL *withdraw)(const struct roth_api_v1 *, const char *);  /* stop offering name; later lookups return NULL. Returns ROTH_ERR_NOT_OWNER when another plugin holds the name and ROTH_ERR_INVALID when nothing is published under it */
+};
 
 /* ---- the host-provided API table (abi header first) ---------------------- */
 struct roth_api_v1 {
@@ -1393,6 +1400,7 @@ struct roth_api_v1 {
     const char *(ROTH_CDECL *plugin_dir)(void);  /* directory of the currently-dispatching plugin (valid during MAIN lifecycle callbacks; "" otherwise) */
     const struct roth_present_v1 *present;  /* full-colour world-frame present channel (NULL on a host that predates it) */
     const struct roth_window_v1 *window;  /* window and display control, host-owned (NULL on a host that predates it) */
+    const struct roth_interfaces_v1 *interfaces;  /* plugin-to-plugin interface registry (NULL on a host that predates it) */
 };
 
 /* ---- context-tagged lifecycle callbacks ---------------------------------- */

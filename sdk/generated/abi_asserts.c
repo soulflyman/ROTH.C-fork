@@ -10,7 +10,7 @@
 #include <stddef.h>
 #include "roth_sdk.h"
 
-_Static_assert(sizeof(struct roth_api_v1) == 28, "sizeof roth_api_v1");
+_Static_assert(sizeof(struct roth_api_v1) == 32, "sizeof roth_api_v1");
 _Static_assert(offsetof(struct roth_api_v1, abi_major) == 0, "offsetof roth_api_v1.abi_major");
 _Static_assert(sizeof(((struct roth_api_v1 *)0)->abi_major) == 2, "fieldsize roth_api_v1.abi_major");
 _Static_assert(offsetof(struct roth_api_v1, abi_minor) == 2, "offsetof roth_api_v1.abi_minor");
@@ -27,6 +27,8 @@ _Static_assert(offsetof(struct roth_api_v1, present) == 20, "offsetof roth_api_v
 _Static_assert(sizeof(((struct roth_api_v1 *)0)->present) == 4, "fieldsize roth_api_v1.present");
 _Static_assert(offsetof(struct roth_api_v1, window) == 24, "offsetof roth_api_v1.window");
 _Static_assert(sizeof(((struct roth_api_v1 *)0)->window) == 4, "fieldsize roth_api_v1.window");
+_Static_assert(offsetof(struct roth_api_v1, interfaces) == 28, "offsetof roth_api_v1.interfaces");
+_Static_assert(sizeof(((struct roth_api_v1 *)0)->interfaces) == 4, "fieldsize roth_api_v1.interfaces");
 
 _Static_assert(sizeof(struct roth_chain) == 20, "sizeof roth_chain");
 _Static_assert(offsetof(struct roth_chain, slots) == 0, "offsetof roth_chain.slots");
@@ -111,6 +113,16 @@ _Static_assert(offsetof(struct roth_game_ram_api_v1, size) == 32, "offsetof roth
 _Static_assert(sizeof(((struct roth_game_ram_api_v1 *)0)->size) == 4, "fieldsize roth_game_ram_api_v1.size");
 _Static_assert(offsetof(struct roth_game_ram_api_v1, to_ptr) == 36, "offsetof roth_game_ram_api_v1.to_ptr");
 _Static_assert(sizeof(((struct roth_game_ram_api_v1 *)0)->to_ptr) == 4, "fieldsize roth_game_ram_api_v1.to_ptr");
+
+_Static_assert(sizeof(struct roth_interfaces_v1) == 16, "sizeof roth_interfaces_v1");
+_Static_assert(offsetof(struct roth_interfaces_v1, struct_size) == 0, "offsetof roth_interfaces_v1.struct_size");
+_Static_assert(sizeof(((struct roth_interfaces_v1 *)0)->struct_size) == 4, "fieldsize roth_interfaces_v1.struct_size");
+_Static_assert(offsetof(struct roth_interfaces_v1, publish) == 4, "offsetof roth_interfaces_v1.publish");
+_Static_assert(sizeof(((struct roth_interfaces_v1 *)0)->publish) == 4, "fieldsize roth_interfaces_v1.publish");
+_Static_assert(offsetof(struct roth_interfaces_v1, lookup) == 8, "offsetof roth_interfaces_v1.lookup");
+_Static_assert(sizeof(((struct roth_interfaces_v1 *)0)->lookup) == 4, "fieldsize roth_interfaces_v1.lookup");
+_Static_assert(offsetof(struct roth_interfaces_v1, withdraw) == 12, "offsetof roth_interfaces_v1.withdraw");
+_Static_assert(sizeof(((struct roth_interfaces_v1 *)0)->withdraw) == 4, "fieldsize roth_interfaces_v1.withdraw");
 
 _Static_assert(sizeof(struct roth_map_event_v1) == 12, "sizeof roth_map_event_v1");
 _Static_assert(offsetof(struct roth_map_event_v1, struct_size) == 0, "offsetof roth_map_event_v1.struct_size");

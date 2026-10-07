@@ -244,9 +244,63 @@ is for settings UIs; this API does not set a display mode. Note the snapshot is 
 window's own thread, which starts after plugin load — a count of 0 during `on_load` is normal;
 query the list after your first video event instead.
 
-**Forward compatibility.** `api->present` and `api->window` are `NULL` on a host older than the
-minor that introduced them, and each carries a leading `struct_size` so you can feature-detect a
-method a newer SDK added before calling it. Guard accordingly if your mod must load on older hosts.
+### Plugin interfaces (mods talking to mods)
+
+Sometimes one mod has to tell another something. A renderer that draws the world itself is the
+only code that can make one enemy glow, so a gameplay mod that wants a glowing enemy has to ask it.
+`api->interfaces` is how the two find each other without either linking against the other.
+
+The mod offering a service defines a table (function pointers behind a leading `struct_size`, the
+same shape the SDK's own tables have), ships a header describing it, and publishes it from
+`on_load`:
+
+```c
+/* my_lights.h, shipped with the publishing mod */
+#define MY_LIGHTS_NAME    "com.example.lights"
+#define MY_LIGHTS_VERSION 1u
+struct my_lights_v1 {
+    uint32_t struct_size;
+    void (ROTH_CDECL *set_torch)(int32_t on);
+};
+
+/* in the publishing mod */
+static const struct my_lights_v1 LIGHTS = { sizeof LIGHTS, lights_set_torch };
+static void ROTH_CDECL on_load(const struct roth_api_v1 *api) {
+    if (api->interfaces)
+        api->interfaces->publish(api, MY_LIGHTS_NAME, MY_LIGHTS_VERSION, &LIGHTS);
+}
+```
+
+A mod that wants the service copies that header and looks the name up. `NULL` is the ordinary
+answer when the other mod is not installed, so keep working without it:
+
+```c
+static const struct my_lights_v1 *lights;
+static void ROTH_CDECL on_game_ram_ready(const struct roth_api_v1 *api) {
+    uint32_t version = 0;
+    if (api->interfaces)
+        lights = api->interfaces->lookup(api, MY_LIGHTS_NAME, &version);
+}
+```
+
+Rules that keep this dependable:
+
+- **Publish in `on_load`, look up from `on_game_ram_ready` or later.** Every `on_load` runs before
+  the first `on_game_ram_ready`, so load order stops mattering.
+- **Call `publish`, `lookup` and `withdraw` from MAIN or GAME context only.** Which contexts the
+  published functions themselves may be called from is part of the publisher's contract.
+- **The host never looks inside the table.** Layout, versioning and behavior belong to the
+  publisher. Grow a table by appending members and let consumers check `struct_size`; give a
+  breaking change a new name.
+- **One owner per name.** A second plugin publishing a held name gets `ROTH_ERR_NOT_OWNER`.
+- **Keep the table alive until your `on_unload` returns.** The host withdraws it for you after
+  that. Plugins unload in reverse load order, so do not call another mod's table from your own
+  `on_unload`.
+
+**Forward compatibility.** `api->present`, `api->window` and `api->interfaces` are `NULL` on a host
+older than the minor that introduced them, and each carries a leading `struct_size` so you can
+feature-detect a method a newer SDK added before calling it. Guard accordingly if your mod must
+load on older hosts.
 
 ### Function overrides: wraps and replacements
 

@@ -26,6 +26,7 @@
 #include "sys/sys.h"            /* per-OS seam: shared-object loading, directory enumeration, soname */
 #include "shared_fb.h"          /* g_shm: the published cur_w/cur_h + DAC palette watched for notifications */
 #include "present_channel.h"    /* per-plugin world-channel ownership release on unload */
+#include "interface_registry.h" /* per-plugin published-interface release on unload */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -601,6 +602,7 @@ void plugins_dispatch_unload(void)
             g_cur_dispatch_dir = NULL;
         }
         roth_present_release_owner(plugin_api(i));
+        roth_interfaces_release_owner(plugin_api(i));
     }
     /* v1: NO dlclose of accepted plugins — handles retained to process exit (§10.3 / finding 3). */
 }

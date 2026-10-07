@@ -2,14 +2,14 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 7,
+ "sdk_minor": 8,
  "abi_major": 0,
- "abi_minor": 7,
+ "abi_minor": 8,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
   "roth_api_v1": {
-   "size": 28,
+   "size": 32,
    "fields": [
     {
      "name": "abi_major",
@@ -62,6 +62,13 @@
      "size": 4,
      "kind": "ptr",
      "points_to": "roth_window_v1"
+    },
+    {
+     "name": "interfaces",
+     "offset": 28,
+     "size": 4,
+     "kind": "ptr",
+     "points_to": "roth_interfaces_v1"
     }
    ]
   },
@@ -642,6 +649,35 @@
     {
      "name": "get_display_mode",
      "offset": 24,
+     "size": 4,
+     "kind": "fnptr"
+    }
+   ]
+  },
+  "roth_interfaces_v1": {
+   "size": 16,
+   "fields": [
+    {
+     "name": "struct_size",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "publish",
+     "offset": 4,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "lookup",
+     "offset": 8,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "withdraw",
+     "offset": 12,
      "size": 4,
      "kind": "fnptr"
     }

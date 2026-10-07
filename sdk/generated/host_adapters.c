@@ -136,6 +136,18 @@ static const struct roth_window_v1 WINDOW = {
     .get_display_mode = roth_window_get_display_mode,
 };
 
+/* roth_interfaces_v1: host implementations provided by the game's platform layer (extern here;
+ * the standalone -c ABI proof leaves them unresolved — the game link binds the platform TU). */
+extern int32_t roth_interfaces_publish(const struct roth_api_v1 *, const char *, uint32_t, const void *);
+extern const void *roth_interfaces_lookup(const struct roth_api_v1 *, const char *, uint32_t *);
+extern int32_t roth_interfaces_withdraw(const struct roth_api_v1 *, const char *);
+static const struct roth_interfaces_v1 INTERFACES = {
+    .struct_size = (uint32_t)sizeof(struct roth_interfaces_v1),
+    .publish = roth_interfaces_publish,
+    .lookup = roth_interfaces_lookup,
+    .withdraw = roth_interfaces_withdraw,
+};
+
 ROTH_SDK_EXPORT const struct roth_api_v1 roth_host_api_v1 = {
     .abi_major = ROTH_ABI_MAJOR,
     .abi_minor = ROTH_ABI_MINOR,
@@ -145,4 +157,5 @@ ROTH_SDK_EXPORT const struct roth_api_v1 roth_host_api_v1 = {
     .plugin_dir = roth_sdk_current_plugin_dir,
     .present = &PRESENT,
     .window = &WINDOW,
+    .interfaces = &INTERFACES,
 };

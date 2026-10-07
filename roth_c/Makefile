@@ -245,8 +245,10 @@ STANDALONE_HOST_OBJS := $(PLATFORM_OBJS) $(PLATFORM_OS_OBJS) $(STANDALONE_ONLY_O
 # the runtime PLUGIN platform — standalone-only by linkage.
 # plugin_loader.o = the dlopen/validate/lifecycle state machine; host_adapters.o = the GENERATED
 # host API table (sdk/generated/host_adapters.c) filled against the real engine + game_ram;
-# present_channel.o = the host side of the RGBA present channel + present pacing + window control.
-PLUGIN_OBJS := $(BUILD)/plugin_loader.o $(BUILD)/host_adapters.o $(BUILD)/present_channel.o
+# present_channel.o = the host side of the RGBA present channel + present pacing + window control;
+# interface_registry.o = the host side of the plugin-to-plugin interface registry.
+PLUGIN_OBJS := $(BUILD)/plugin_loader.o $(BUILD)/host_adapters.o $(BUILD)/present_channel.o \
+               $(BUILD)/interface_registry.o
 
 # the boot-time OVERRIDE REGISTRY — standalone only.
 # override_registry.o = the chain builder + boot-time entry patcher; override_gen.o = the GENERATED
@@ -539,6 +541,11 @@ $(BUILD)/host_adapters.o: $(SDK_DIR)/generated/host_adapters.c $(SDK_INC)/roth_s
 # header (for struct roth_api_v1), like plugin_loader.o.
 $(BUILD)/present_channel.o: $(PLATFORM)/present_channel.c $(PLATFORM)/present_channel.h \
                             $(SDK_INC)/roth_sdk.h | $(BUILD)
+	$(CC) $(CFLAGS) -I$(SDK_INC) -c -o $@ $<
+# interface_registry.c: the host side of the roth_interfaces_v1 SDK sub-table. Portable C; provides
+# the roth_interfaces_* symbols host_adapters.o binds. Plain CFLAGS + the SDK header.
+$(BUILD)/interface_registry.o: $(PLATFORM)/interface_registry.c $(PLATFORM)/interface_registry.h \
+                               $(SDK_INC)/roth_sdk.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(SDK_INC) -c -o $@ $<
 
 # --- the override registry — standalone only ---

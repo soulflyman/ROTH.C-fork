@@ -178,6 +178,22 @@ is post-present sleep and composes with synchronization, so the slower limit win
 maps to `interval_us = 1000000 / fps`. Display modes are an informational current-display snapshot,
 not a mode-setting API.
 
+## Plugin interfaces
+
+`api->interfaces` is a registry through which one plugin offers a table of its own to the others.
+`publish(api, name, version, iface)` records a pointer under a reverse-DNS name, `lookup(api, name,
+&version)` returns it (or `NULL` when nobody has published that name), and `withdraw(api, name)`
+takes it down. The host stores the name and the pointer and never interprets the table: its layout,
+its calling contexts and the meaning of `version` are the publisher's contract, shipped as a header
+with the publishing mod. One plugin holds a name at a time (`ROTH_ERR_NOT_OWNER` for anyone else),
+and a breaking change to a table takes a new name.
+
+All three calls are MAIN or GAME context. Every `on_load` completes before the first
+`on_game_ram_ready`, so a table published in `on_load` is found from `on_game_ram_ready` onward
+regardless of load order. A published table must stay valid until the publisher's `on_unload`
+returns; the host then withdraws whatever that plugin still has published. Plugins unload in
+reverse load order, so a consumer must not call through a looked-up table from its own `on_unload`.
+
 ## The override-target manifest
 
 `abi/override_targets.json` is the authority on which functions a mod may override. It lists
@@ -193,8 +209,10 @@ machinery).
 
 ## Versioning + the bump policy
 
-The SDK and ABI are at **0.7** (`ROTH_SDK_MAJOR/MINOR`, `ROTH_ABI_MAJOR/MINOR` in `roth_sdk.h`;
-`version` in `sdk_api.json`). 0.7 adds the centered-engine-over-source-canvas composite mode and
+The SDK and ABI are at **0.8** (`ROTH_SDK_MAJOR/MINOR`, `ROTH_ABI_MAJOR/MINOR` in `roth_sdk.h`;
+`version` in `sdk_api.json`). 0.8 appends a third host-service sub-table behind a new trailing
+`roth_api_v1` pointer: `roth_interfaces_v1`, the plugin-to-plugin interface registry.
+0.7 adds the centered-engine-over-source-canvas composite mode and
 appends the optional engine-index baseline plane to `roth_world_frame_v1`; every prior field offset
 remains byte-identical. 0.6 appended, all trailing (every prior offset byte-identical): the
 `PRESENT` execution context; two host-service sub-tables reached through new trailing `roth_api_v1`

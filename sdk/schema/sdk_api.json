@@ -4,10 +4,10 @@
 
  "version": {
   "sdk_major": 0,
-  "sdk_minor": 7,
+  "sdk_minor": 8,
   "abi_major": 0,
-  "abi_minor": 7,
-  "load_rule": "A plugin loads iff abi_major == host.abi_major AND abi_minor <= host.abi_minor. Additive growth requires a minor bump; a breaking change requires a major bump. The engine-call table's slot order is exposure order and is frozen ABI: new exposures append at the end, existing slot offsets never move, and the exposure-order gate enforces prefix stability against the released baseline. Version 0.7 adds the centered-engine-over-source-canvas composite mode and appends an optional engine-index baseline plane to roth_world_frame_v1. Version 0.6 appends the PRESENT context, the roth_present_v1 and roth_window_v1 host-service sub-tables, and the on_map_loaded, on_palette_changed, on_video_mode_changed, and on_present_pace callbacks. Version 0.5 appends blit_das_image_to_buffer and draw_popup_shadow_border_smc to the engine table. Version 0.4 appends game_ram->to_ptr, struct roth_mouse_poll_v1, the on_scancode and on_mouse_poll callbacks, and roth_api_v1->plugin_dir()."
+  "abi_minor": 8,
+  "load_rule": "A plugin loads iff abi_major == host.abi_major AND abi_minor <= host.abi_minor. Additive growth requires a minor bump; a breaking change requires a major bump. The engine-call table's slot order is exposure order and is frozen ABI: new exposures append at the end, existing slot offsets never move, and the exposure-order gate enforces prefix stability against the released baseline. Version 0.8 appends the roth_interfaces_v1 host-service sub-table, the plugin-to-plugin interface registry. Version 0.7 adds the centered-engine-over-source-canvas composite mode and appends an optional engine-index baseline plane to roth_world_frame_v1. Version 0.6 appends the PRESENT context, the roth_present_v1 and roth_window_v1 host-service sub-tables, and the on_map_loaded, on_palette_changed, on_video_mode_changed, and on_present_pace callbacks. Version 0.5 appends blit_das_image_to_buffer and draw_popup_shadow_border_smc to the engine table. Version 0.4 appends game_ram->to_ptr, struct roth_mouse_poll_v1, the on_scancode and on_mouse_poll callbacks, and roth_api_v1->plugin_dir()."
  },
 
  "contexts": {
@@ -214,6 +214,29 @@
         {"type": "uint32_t *", "name": "w"}, {"type": "uint32_t *", "name": "h"}, {"type": "uint32_t *", "name": "refresh_mhz"}],
       "host_symbol": "roth_window_get_display_mode",
       "desc": "read one snapshot entry; refresh is millihertz and output pointers may be NULL. Returns ROTH_ERR_RANGE for an invalid index"}
+    ]
+   },
+   {
+    "struct_name": "roth_interfaces_v1",
+    "field_name": "interfaces",
+    "field_desc": "plugin-to-plugin interface registry (NULL on a host that predates it)",
+    "note": "The plugin-to-plugin interface registry. A plugin publishes a named, versioned pointer to a table it owns, and any other plugin looks it up by name; the host stores the name and the pointer and never interprets what the pointer leads to. The contract behind a name (the table layout, its calling contexts, what a version number means) belongs to the publisher, who documents it and ships a header for it. Names are reverse-DNS like plugin ids, and a breaking change takes a new name. publish, lookup and withdraw are MAIN or GAME context only. Every on_load completes before the first on_game_ram_ready, so a plugin that publishes in on_load is found by a lookup made from on_game_ram_ready or later, whatever the load order; a lookup for a name nobody has published returns NULL, and that is the ordinary answer when the publisher is not installed. The published table must stay valid until the publisher's on_unload returns, when the host withdraws whatever the plugin still has published. Plugins unload in reverse load order, so a consumer must not call through a looked-up interface from its own on_unload.",
+    "members": [
+     {"name": "struct_size", "type": "uint32_t", "desc": "sizeof(struct roth_interfaces_v1) as the host built it (feature-detect newer methods)"},
+     {"name": "publish", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}, {"type": "const char *", "name": "name"},
+        {"type": "uint32_t", "name": "version"}, {"type": "const void *", "name": "iface"}],
+      "host_symbol": "roth_interfaces_publish",
+      "desc": "publish iface under name (1 to 63 characters, containing a '.'; the host copies it). version is the publisher's own revision number for the table. Publishing a name the caller already holds replaces the pointer and version. Returns ROTH_ERR_NOT_OWNER when another plugin holds the name, ROTH_ERR_INVALID for a bad name or a NULL iface, and ROTH_ERR_NOMEM when the registry is full"},
+     {"name": "lookup", "ret": "const void *", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}, {"type": "const char *", "name": "name"},
+        {"type": "uint32_t *", "name": "version"}],
+      "host_symbol": "roth_interfaces_lookup",
+      "desc": "the pointer published under name, or NULL when nothing is. Writes the published version through version when it is not NULL and the name was found"},
+     {"name": "withdraw", "ret": "int32_t", "params": [
+        {"type": "const struct roth_api_v1 *", "name": "api"}, {"type": "const char *", "name": "name"}],
+      "host_symbol": "roth_interfaces_withdraw",
+      "desc": "stop offering name; later lookups return NULL. Returns ROTH_ERR_NOT_OWNER when another plugin holds the name and ROTH_ERR_INVALID when nothing is published under it"}
     ]
    }
   ]
