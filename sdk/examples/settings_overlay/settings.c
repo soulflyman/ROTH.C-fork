@@ -404,13 +404,36 @@ static int cfg_patch_file(const char *path, const char *const *keys, const char 
 /* ============================== plugin state ============================== */
 typedef enum { ST_CLOSED, ST_MAIN, ST_REBIND, ST_CAPTURE } ui_state_t;
 
+/* ---- screen resolution (a built-in row, not a registry setting: the source of truth is the engine's
+ * resolution index + ROTH.INI's VideoMode). Applied the way the engine's own Screen menu does it:
+ * g_selected_video_mode + bit 4 of g_pending_game_action, which the game loop turns into a mode set.
+ * The big framebuffer is allocated at boot from VideoMode, so a mode that doesn't fit the CURRENT
+ * surface (w*h > g_framebuffer_bytes) can't be switched live: then only VideoMode is saved. */
+#define VA_RES_INDEX        0x7f358u   /* g_screen_resolution_index (current table index) */
+#define VA_SELECTED_MODE    0x7f578u   /* g_selected_video_mode: index saved to ROTH.INI on exit */
+#define VA_PENDING_ACTION   0x7fea8u   /* g_pending_game_action (byte; bit 4 = apply resolution) */
+#define VA_FRAMEBUFFER_BYTES 0x85478u
+#define VA_MODE_TABLE       0x146e8u   /* g_vesa_scale_and_mode_table; descriptors at +0x24, stride 10 */
+typedef struct { int idx; const char *name; } res_opt_t;
+static const res_opt_t RES_LIST[] = {
+    {1, "320X200"}, {2, "320X400"}, {7, "640X400"}, {8, "640X480"}, {9, "854X480"},
+};
+#define NUM_RES ((int)(sizeof RES_LIST / sizeof *RES_LIST))
+static volatile int g_res_sel;                  /* index into RES_LIST shown in the row */
+static volatile int g_res_apply;                /* Enter pressed -> handled in on_frame_game */
+static int g_res_now = -1;                      /* RES_LIST position of the running mode, -1 = not in the list */
+static char g_res_status[24];
+static char g_game_dir[2600];
+
+
 #define ROW_YAW    0
 #define ROW_PITCH  1
 #define ROW_INVERT 2
 #define ROW_FILTER 3
-/* Row layout: 0-3 built-ins | REG_BASE.. registry section (headers + settings; g_nregrows rows, filled
+/* Row layout: 0-4 built-ins (yaw, pitch, invert, filter, resolution) | REG_BASE.. registry section (headers + settings; g_nregrows rows, filled
  * once at the first on_frame_game, when every plugin's on_load has run) | KEY BINDINGS label | actions. */
-#define REG_BASE 4
+#define ROW_RES    4
+#define REG_BASE   5
 #define REGROWS_MAX 600
 typedef struct { const struct roth_setting_v1 *s; uint32_t idx; const char *title; } regrow_t;  /* title!=NULL: header */
 static regrow_t g_regrows[REGROWS_MAX];
@@ -517,6 +540,10 @@ static void on_load(const struct roth_api_v1 *api)
     resolve_sibling_cfg(g_keybinds_cfg, sizeof g_keybinds_cfg, api->plugin_dir(),
                         "ROTH_SETTINGS_KEYBINDS_CFG", "keybinds", "keybinds.cfg");
     load_mouselook_display_values();
+
+    snprintf(g_game_dir, sizeof g_game_dir, "%s", api->plugin_dir());      /* <game>/mods/_settings -> <game> */
+    for (int up = 0; up < 2; up++) { char *sl = strrchr(g_game_dir, '/'); if (sl) *sl = '\0'; }
+    if (getenv("ROTH_SETTINGS_GAME_DIR")) snprintf(g_game_dir, sizeof g_game_dir, "%s", getenv("ROTH_SETTINGS_GAME_DIR"));
 
     if (getenv("ROTH_SETTINGS_FORCE_OPEN")) {
         g_state = ST_MAIN;
@@ -643,6 +670,12 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         } else if (g_sel == ROW_FILTER) {
             g_disp_filter = !g_disp_filter;
             g_filter_dirty = 1;
+        } else if (g_sel == ROW_RES) {
+            int v = g_res_sel + dir;
+            if (v < 0) v = NUM_RES - 1;
+            if (v >= NUM_RES) v = 0;
+            g_res_sel = v;
+            g_res_status[0] = '\0';
         } else if (IN_REG(g_sel)) {
             reg_adjust(g_sel, dir);
         }
@@ -655,6 +688,8 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         } else if (g_sel == ROW_FILTER) {
             g_disp_filter = !g_disp_filter;
             g_filter_dirty = 1;
+        } else if (g_sel == ROW_RES) {
+            g_res_apply = 1;
         } else if (IN_REG(g_sel)) {
             const struct roth_setting_v1 *rs = g_regrows[g_sel - REG_BASE].s;
             if (rs && rs->type == ROTH_SETTING_KEY) { g_capture_row = g_sel; g_state = ST_CAPTURE; }
@@ -676,6 +711,66 @@ static void on_mouse_poll(const struct roth_api_v1 *api, struct roth_mouse_poll_
     if (!g_overlay_open) return;
     if (mp->ax == 0x000b) { mp->ecx &= ~0xffffu; mp->edx &= ~0xffffu; }
     else if (mp->ax == 0x0003) { mp->ebx &= ~0xffffu; }
+}
+
+/* Set "VideoMode=<idx>" in <game>/ROTH.INI, keeping the file's own line endings and every other line.
+ * (The engine also rewrites this file from g_selected_video_mode when the game exits; patching it now
+ * just makes the choice survive a crash/kill.) Returns 0 on success. */
+static int patch_ini_video_mode(int idx)
+{
+    static const char *const names[] = { "ROTH.INI", "roth.ini", "Roth.ini", NULL };
+    char path[2700];
+    FILE *f = NULL;
+    for (int i = 0; names[i] && !f; i++) {
+        snprintf(path, sizeof path, "%s/%s", g_game_dir, names[i]);
+        f = fopen(path, "rb");
+    }
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return -1; }
+    size_t rd = fread(buf, 1, (size_t)n, f); fclose(f); buf[rd] = '\0';
+    const char *eol = strchr(buf, '\r') ? "\r\n" : "\n";
+    char *out = (char *)malloc(rd + 64);
+    if (!out) { free(buf); return -1; }
+    size_t ol = 0; int done = 0;
+    for (char *p = buf; *p; ) {
+        char *nl = strchr(p, '\n');
+        size_t ll = nl ? (size_t)(nl - p + 1) : strlen(p);
+        const char *q = p; while (*q == ' ' || *q == '\t') q++;
+        if (!done && ci_ncmp(q, "VideoMode", 9) == 0 && (q[9] == '=' || q[9] == ' ')) {
+            ol += (size_t)sprintf(out + ol, "VideoMode=%d%s", idx, eol);
+            done = 1;
+        } else { memcpy(out + ol, p, ll); ol += ll; }
+        p += ll;
+    }
+    if (!done) ol += (size_t)sprintf(out + ol, "VideoMode=%d%s", idx, eol);
+    char tmp[2720];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *w = fopen(tmp, "wb");
+    int rc = -1;
+    if (w) { fwrite(out, 1, ol, w); fclose(w); remove(path); rc = rename(tmp, path); }
+    free(buf); free(out);
+    return rc;
+}
+
+/* Apply the row's resolution (Enter): live if it fits the running framebuffer, else save-for-restart. */
+static void apply_resolution(const struct roth_api_v1 *api)
+{
+    const struct roth_game_ram_api_v1 *gr = api->game_ram;
+    int idx = RES_LIST[g_res_sel].idx;
+    if ((int)gr->u32(VA_RES_INDEX) == idx) { snprintf(g_res_status, sizeof g_res_status, "ALREADY ACTIVE"); return; }
+    uint32_t d = VA_MODE_TABLE + 0x24u + (uint32_t)idx * 10u;
+    uint32_t need = (uint32_t)gr->u16(d) * (uint32_t)gr->u16(d + 2);
+    int fits = need > 0 && need <= gr->u32(VA_FRAMEBUFFER_BYTES);
+    gr->set_u32(VA_SELECTED_MODE, (uint32_t)idx);              /* what write_roth_ini saves on exit */
+    int ini = patch_ini_video_mode(idx);
+    if (fits) {
+        gr->set_u8(VA_PENDING_ACTION, (uint8_t)(gr->u8(VA_PENDING_ACTION) | 4u));   /* the game loop does the mode set */
+        snprintf(g_res_status, sizeof g_res_status, "APPLYING");
+    } else {
+        snprintf(g_res_status, sizeof g_res_status, ini == 0 ? "RESTART NEEDED" : "RESTART NEEDED NO INI");
+    }
 }
 
 /* Build the registry section once: an owner header per plugin (+ a sub-header whenever `group` changes), then
@@ -726,8 +821,20 @@ static void on_frame_game(const struct roth_api_v1 *api)
         for (int i = 0; i < NUM_ACTIONS; i++)
             g_action_sc[i] = find_action_key(gr, &kb_actions[i]);
         g_disp_filter = (int)api->get_display_filter();
+        g_res_now = -1;                                 /* position of the running mode in the list */
+        for (int i = 0; i < NUM_RES; i++)
+            if ((int)gr->u32(VA_RES_INDEX) == RES_LIST[i].idx) g_res_now = i;
+        if (g_res_now >= 0) g_res_sel = g_res_now;
+        g_res_status[0] = '\0';
     }
     prev_state = g_state;
+
+    if (g_res_apply) { g_res_apply = 0; apply_resolution(api); }
+    if (g_state != ST_CLOSED) {                        /* keep "NOW" fresh after a live switch */
+        g_res_now = -1;
+        for (int i = 0; i < NUM_RES; i++)
+            if ((int)gr->u32(VA_RES_INDEX) == RES_LIST[i].idx) g_res_now = i;
+    }
 
     if (g_filter_dirty) {
         api->set_display_filter((uint32_t)g_disp_filter);
@@ -813,6 +920,15 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
         } else if (row == ROW_FILTER) {
             draw_string(pixels, width, height, list_x, y, "UPSCALE FILTER", COL_TEXT, 1);
             draw_string(pixels, width, height, list_x + 110, y, g_disp_filter ? "LINEAR" : "NEAREST", COL_TEXT, 1);
+        } else if (row == ROW_RES) {
+            draw_string(pixels, width, height, list_x, y, "RESOLUTION", COL_TEXT, 1);
+            int sp = g_res_sel;
+            snprintf(buf, sizeof buf, "%s%s", RES_LIST[sp].name, sp == g_res_now ? " NOW" : "");
+            draw_string(pixels, width, height, list_x + 110, y, buf, COL_TEXT, 1);
+            if (g_res_status[0])
+                draw_string(pixels, width, height, list_x + 110 + 12 * 6, y, g_res_status, COL_TEXT, 1);
+            else if (row == g_sel && sp != g_res_now)
+                draw_string(pixels, width, height, list_x + 110 + 12 * 6, y, "ENTER APPLIES", COL_TEXT, 1);
         } else if (IN_REG(row)) {
             const regrow_t *rr = &g_regrows[row - REG_BASE];
             if (rr->title) {
