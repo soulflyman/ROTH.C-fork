@@ -1,6 +1,6 @@
 # ROTH.C SDK examples
 
-Five example plugins, one per capability. Each is a self-contained template: it compiles against
+Six example plugins, one per capability. Each is a self-contained template: it compiles against
 **only** `sdk/include/roth_sdk.h` (no engine headers, no repo internals), so copying a directory
 elsewhere and pointing its `Makefile` at the SDK header is all it takes to start a new mod. Read
 [`../MODDING_GUIDE.md`](../MODDING_GUIDE.md) first for the concepts these demonstrate.
@@ -10,6 +10,7 @@ elsewhere and pointing its `Makefile` at the SDK header is all it takes to start
 | `hello` | the minimal plugin: the lifecycle callbacks (`on_load` → `on_unload`), reading `game_ram`, and drawing into the compose-tick frame — also the self-containment proof |
 | `keybinds` | a **data mod** plus the **scancode input seam**: rebinds the engine's keybind tables in `game_ram` at boot and rewrites menu-navigation keys through `on_scancode` |
 | `item_grabber` | the full **overlay toolkit**: the compose-tick, mouse-poll, and scancode seams driving a custom UI, with exposed engine calls behind it |
+| `inventory_page` | a **single-page inventory overlay**: reads the carried array from `game_ram`, loads item names/categories once from DBASE100/400, draws every category on one grouped page, and equips weapons through the SDK 0.7 weapon calls |
 | `wraptest` | a function **wrap** via the override registry — decorates a function and forwards through `roth_next` |
 | `doc_viewer` | a full function **replacement** with clean passthrough — replaces a function's body, or returns `roth_next` when disabled |
 
