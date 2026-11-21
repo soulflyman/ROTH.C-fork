@@ -361,6 +361,7 @@ int sdl_present_run(int scale, int filter)
          * force a full recreate on a filter change too, the same way a resolution change already does. */
         uint32_t fm = g_shm->filter_mode;
         int want_filter = (fm & 1u) != 0;
+        int edge_now = ((fm >> 8) & 0xffu) ? (int)((fm >> 8) & 0xffu) : edge_min;   /* live threshold from the flag word, else env/default */
         if (w != cur_tex_w || h != cur_tex_h || want_filter != cur_filter) {
             cur_filter = want_filter;
             scale_mode = cur_filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
@@ -403,7 +404,7 @@ int sdl_present_run(int scale, int filter)
                     pal32[i] = 0xff000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
                 }
                 aa_pass(rgb, (const uint8_t *)g_shm->pixels, pal32, w, h, vx0, vy0, vx1, vy1,
-                        (int)g_shm->ovl_x0, (int)g_shm->ovl_y0, (int)g_shm->ovl_x1, (int)g_shm->ovl_y1, edge_min);
+                        (int)g_shm->ovl_x0, (int)g_shm->ovl_y0, (int)g_shm->ovl_x1, (int)g_shm->ovl_y1, edge_now);
             }
         }
 

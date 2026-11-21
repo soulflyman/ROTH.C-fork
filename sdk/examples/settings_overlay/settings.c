@@ -429,12 +429,10 @@ static char g_game_dir[2600];
 #define ROW_YAW    0
 #define ROW_PITCH  1
 #define ROW_INVERT 2
-#define ROW_FILTER 3
-/* Row layout: 0-5 built-ins (yaw, pitch, invert, filter, anti-aliasing, resolution) | REG_BASE.. registry section (headers + settings; g_nregrows rows, filled
+/* Row layout: 0-3 built-ins (yaw, pitch, invert, resolution) | REG_BASE.. registry section (headers + settings; g_nregrows rows, filled
  * once at the first on_frame_game, when every plugin's on_load has run) | KEY BINDINGS label | actions. */
-#define ROW_AA     4
-#define ROW_RES    5
-#define REG_BASE   6
+#define ROW_RES    3
+#define REG_BASE   4
 #define REGROWS_MAX 600
 typedef struct { const struct roth_setting_v1 *s; uint32_t idx; const char *title; } regrow_t;  /* title!=NULL: header */
 static regrow_t g_regrows[REGROWS_MAX];
@@ -463,9 +461,16 @@ static int g_mouselook_dirty = 0;
 /* Upscale filter (SDK 0.6 roth_api_v1->set/get_display_filter): unlike mouselook/keybinds this
  * isn't backed by a cfg file the overlay can read — it's live host/platform state (g_shm), so
  * on open we ask the host for ground truth (get_display_filter) instead of assuming nearest. */
-static int g_disp_filter = 0;
-static int g_filter_dirty = 0;
-static int g_disp_aa = 0;     /* display-filter flag bit 1: edge anti-aliasing of the 3D view */
+/* Display options (upscale filter / edge anti-aliasing / AA threshold) are REGISTRY settings registered by this
+ * overlay itself, so they persist in mods/_settings.cfg like any mod's; on_change pushes them to the host via
+ * set_display_filter (flag word: bit0 linear, bit1 edge-AA, bits 8-15 AA threshold). */
+static int32_t g_set_linear = 0, g_set_aa = 0, g_set_aa_thr = 24;
+static const struct roth_api_v1 *g_api;
+static void apply_display_flags(void)
+{
+    if (!g_api) return;
+    g_api->set_display_filter((uint32_t)((g_set_linear ? 1 : 0) | (g_set_aa ? 2 : 0) | ((g_set_aa_thr & 0xff) << 8)));
+}
 
 static uint8_t g_action_sc[64]; /* current scancode per action, refreshed from game_ram on open */
 
@@ -519,20 +524,48 @@ static void on_load(const struct roth_api_v1 *api)
     if (getenv("ROTH_SETTINGS_TOGGLE_KEY"))        /* seeds the default; a saved registry value still wins */
         g_toggle_key = (int32_t)(strtoul(getenv("ROTH_SETTINGS_TOGGLE_KEY"), NULL, 0) & 0x7f);
 
+    g_api = api;
+    {   /* seed the display options from the host's current flags (CLI --filter/--aa, ROTH_AA_EDGE), then register
+         * them: a saved value from mods/_settings.cfg is applied by the host during registration and wins. */
+        uint32_t ff = api->get_display_filter();
+        g_set_linear = (int32_t)(ff & 1u);
+        g_set_aa = (int32_t)((ff >> 1) & 1u);
+        if ((ff >> 8) & 0xffu) g_set_aa_thr = (int32_t)((ff >> 8) & 0xffu);
+        else if (getenv("ROTH_AA_EDGE")) g_set_aa_thr = atoi(getenv("ROTH_AA_EDGE"));
+        if (g_set_aa_thr < 4) g_set_aa_thr = 4;
+        if (g_set_aa_thr > 128) g_set_aa_thr = 128;
+        struct roth_setting_v1 d;
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";
+        d.key = "linear_filter"; d.label = "SMOOTH SCALING"; d.type = ROTH_SETTING_BOOL; d.value = &g_set_linear;
+        d.on_change = apply_display_flags;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";
+        d.key = "edge_aa"; d.label = "ANTI-ALIASING"; d.type = ROTH_SETTING_BOOL; d.value = &g_set_aa;
+        d.on_change = apply_display_flags;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";
+        d.key = "aa_threshold"; d.label = "AA THRESHOLD"; d.type = ROTH_SETTING_INT; d.value = &g_set_aa_thr;
+        d.imin = 4; d.imax = 128; d.istep = 4; d.on_change = apply_display_flags;
+        api->register_setting(&d);
+        apply_display_flags();                         /* push the (possibly persisted) values to the presenter now */
+    }
     {   /* this overlay's own options, through the same registry any other mod uses */
         struct roth_setting_v1 d;
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
-        d.key = "toggle_key"; d.label = "MENU KEY"; d.type = ROTH_SETTING_KEY; d.value = &g_toggle_key;
+        d.group = "MENU"; d.key = "toggle_key"; d.label = "MENU KEY"; d.type = ROTH_SETTING_KEY; d.value = &g_toggle_key;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
-        d.key = "text_color"; d.label = "TEXT COLOR"; d.type = ROTH_SETTING_INT; d.value = &g_text_color;
+        d.group = "MENU"; d.key = "text_color"; d.label = "TEXT COLOR"; d.type = ROTH_SETTING_INT; d.value = &g_text_color;
         d.imin = 0; d.imax = 255; d.istep = 1;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
-        d.key = "background"; d.label = "BACKGROUND"; d.type = ROTH_SETTING_ENUM; d.value = &g_bg_style;
+        d.group = "MENU"; d.key = "background"; d.label = "BACKGROUND"; d.type = ROTH_SETTING_ENUM; d.value = &g_bg_style;
         d.imin = 0; d.imax = 2; d.istep = 1; d.enum_names = BG_STYLE_NAMES;
         api->register_setting(&d);
     }
@@ -669,12 +702,6 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         } else if (g_sel == ROW_INVERT) {
             g_disp_invert = !g_disp_invert;
             g_mouselook_dirty = 1;
-        } else if (g_sel == ROW_FILTER) {
-            g_disp_filter = !g_disp_filter;
-            g_filter_dirty = 1;
-        } else if (g_sel == ROW_AA) {
-            g_disp_aa = !g_disp_aa;
-            g_filter_dirty = 1;
         } else if (g_sel == ROW_RES) {
             int v = g_res_sel + dir;
             if (v < 0) v = NUM_RES - 1;
@@ -690,12 +717,6 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         if (g_sel == ROW_INVERT) {
             g_disp_invert = !g_disp_invert;
             g_mouselook_dirty = 1;
-        } else if (g_sel == ROW_FILTER) {
-            g_disp_filter = !g_disp_filter;
-            g_filter_dirty = 1;
-        } else if (g_sel == ROW_AA) {
-            g_disp_aa = !g_disp_aa;
-            g_filter_dirty = 1;
         } else if (g_sel == ROW_RES) {
             g_res_apply = 1;
         } else if (IN_REG(g_sel)) {
@@ -828,7 +849,6 @@ static void on_frame_game(const struct roth_api_v1 *api)
         load_mouselook_display_values();
         for (int i = 0; i < NUM_ACTIONS; i++)
             g_action_sc[i] = find_action_key(gr, &kb_actions[i]);
-        { uint32_t ff = api->get_display_filter(); g_disp_filter = (int)(ff & 1u); g_disp_aa = (int)((ff >> 1) & 1u); }
         g_res_now = -1;                                 /* position of the running mode in the list */
         for (int i = 0; i < NUM_RES; i++)
             if ((int)gr->u32(VA_RES_INDEX) == RES_LIST[i].idx) g_res_now = i;
@@ -844,10 +864,6 @@ static void on_frame_game(const struct roth_api_v1 *api)
             if ((int)gr->u32(VA_RES_INDEX) == RES_LIST[i].idx) g_res_now = i;
     }
 
-    if (g_filter_dirty) {
-        api->set_display_filter((uint32_t)(g_disp_filter | (g_disp_aa << 1)));   /* bit0 linear, bit1 edge-AA */
-        g_filter_dirty = 0;
-    }
 
     if (g_mouselook_dirty) {
         char yaw_s[32], pitch_s[32], inv_s[8];
@@ -925,12 +941,6 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
         } else if (row == ROW_INVERT) {
             draw_string(pixels, width, height, list_x, y, "INVERT PITCH", COL_TEXT, 1);
             draw_value_bool(pixels, width, height, list_x + 110, y, g_disp_invert);
-        } else if (row == ROW_FILTER) {
-            draw_string(pixels, width, height, list_x, y, "UPSCALE FILTER", COL_TEXT, 1);
-            draw_string(pixels, width, height, list_x + 110, y, g_disp_filter ? "LINEAR" : "NEAREST", COL_TEXT, 1);
-        } else if (row == ROW_AA) {
-            draw_string(pixels, width, height, list_x, y, "ANTI-ALIASING", COL_TEXT, 1);
-            draw_value_bool(pixels, width, height, list_x + 110, y, g_disp_aa);
         } else if (row == ROW_RES) {
             draw_string(pixels, width, height, list_x, y, "RESOLUTION", COL_TEXT, 1);
             int sp = g_res_sel;
