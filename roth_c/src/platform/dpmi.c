@@ -63,6 +63,13 @@ static const struct vbe_mode g_vbe_modes[] = {
     { 0x103, 512, 384 }, /* needs the hi-res framebuffer (boot a hi-res mode) */
     { 0x100, 640, 400 },
     { 0x101, 640, 480 },
+    /* 0x104 is NOT a real VESA mode number — it's a synthetic ID this project invented for the
+     * display-pipeline-overhaul work's new widescreen mode (854x480, ~16:9 at the existing
+     * 640x480 height). It's never auto-discovered by match_vesa_video_modes (which only scans
+     * table entries 1-8); it's hardcoded directly into g_vesa_scale_and_mode_table's entry 9
+     * (obj1_owned.c), repurposing that always-dead slot. Needs the hi-res framebuffer (grows
+     * alloc_framebuffer_surface's allocation beyond the historical 0x4b000). */
+    { 0x104, 854, 480 },
     /* 800x600 (480 KB) exceeds the game's largest framebuffer (0x4b000=300 KB)
      * and our publish buffer (ROTH_FB_MAX), so it is intentionally omitted. */
 };

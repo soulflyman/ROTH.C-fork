@@ -442,11 +442,11 @@ $(BUILD)/%_if.o: $(ENGINE)/%.c $(ENGINE)/engine.h $(ENGINE)/common.h | $(BUILD)
 # shared traps.c, image-free (function-sectioned so the unreached int-trap servicer gc's away). The
 # only seam consumer now is the plugin loader (plugins_dispatch_scancode/_compose_tick, guarded
 # #ifdef ROTH_STANDALONE && !ROTH_VANILLA); there is no compile-time mods layer, so no -Imods.
-$(BUILD)/traps_if.o: $(PLATFORM)/traps.c | $(BUILD)
+$(BUILD)/traps_if.o: $(PLATFORM)/traps.c $(PLATFORM)/shared_fb.h | $(BUILD)
 	$(CC) $(STANDALONE_CFLAGS) -c -o $@ $<
 # main.c compiled -DROTH_STANDALONE (the image-free program entry / boot dispatch). Includes the
 # SDL-free sdl/sdl_host.h (no SDL headers needed here — only sdl_host.c pulls in SDL3).
-$(BUILD)/main_if.o: $(PLATFORM)/main.c $(PLATFORM)/sdl/sdl_host.h | $(BUILD)
+$(BUILD)/main_if.o: $(PLATFORM)/main.c $(PLATFORM)/sdl/sdl_host.h $(PLATFORM)/shared_fb.h | $(BUILD)
 	$(CC) $(MAINIF_CFLAGS) -c -o $@ $<
 # the in-process SDL3 window (native SDL3; ROTH_STANDALONE + the SDL3 include path). Linked ONLY
 # into the roth game binary — the differential trap host never compiles or links this TU.
@@ -484,8 +484,8 @@ $(BUILD)/rothc_res.o: res/rothc.rc $(WIN_ICON) | $(BUILD)
 
 # --- the always-native host services (plain CFLAGS) ---
 $(BUILD)/dos.o:                 $(PLATFORM)/dos.c                 | $(BUILD) ; $(CC) $(CFLAGS) -c -o $@ $<
-$(BUILD)/dpmi.o:                $(PLATFORM)/dpmi.c                | $(BUILD) ; $(CC) $(CFLAGS) -c -o $@ $<
-$(BUILD)/audio.o:               $(PLATFORM)/audio.c               | $(BUILD) ; $(CC) $(CFLAGS) -c -o $@ $<
+$(BUILD)/dpmi.o:                $(PLATFORM)/dpmi.c $(PLATFORM)/shared_fb.h | $(BUILD) ; $(CC) $(CFLAGS) -c -o $@ $<
+$(BUILD)/audio.o:               $(PLATFORM)/audio.c $(PLATFORM)/shared_fb.h | $(BUILD) ; $(CC) $(CFLAGS) -c -o $@ $<
 $(BUILD)/audio_trace.o:         $(PLATFORM)/audio_trace.c         | $(BUILD) ; $(CC) $(CFLAGS) -c -o $@ $<
 $(BUILD)/os_api.o:              $(PLATFORM)/os_api.c              | $(BUILD) ; $(CC) $(CFLAGS) -c -o $@ $<
 $(BUILD)/standalone_hooks.o:    $(PLATFORM)/standalone_hooks.c    | $(BUILD) ; $(CC) $(CFLAGS) -c -o $@ $<
@@ -498,7 +498,8 @@ $(BUILD)/os_audio_standalone.o: $(PLATFORM)/os_audio_standalone.c | $(BUILD) ; $
 # --- the runtime plugin platform — standalone only, needs the SDK public header ---
 # plugin_loader.c: the loader/lifecycle state machine (plain CFLAGS, like boot.o; not sectioned).
 $(BUILD)/plugin_loader.o: $(PLATFORM)/plugin_loader.c $(PLATFORM)/plugin_loader.h \
-                          $(SDK_INC)/roth_sdk.h $(ENGINE)/engine.h $(PLATFORM)/standalone_hooks.h | $(BUILD)
+                          $(SDK_INC)/roth_sdk.h $(ENGINE)/engine.h $(PLATFORM)/standalone_hooks.h \
+                          $(PLATFORM)/shared_fb.h | $(BUILD)
 	$(CC) $(CFLAGS) -I$(SDK_INC) -c -o $@ $<
 # host_adapters.c: the GENERATED host API table (the compile-time ABI proof, now linked for real).
 # Compiled straight from sdk/generated/ — never hand-edited. It provides roth_host_api_v1 + the

@@ -13,10 +13,15 @@
 #include <stdint.h>
 
 #define ROTH_SHM_NAME  "/roth_fb"
-#define ROTH_SHM_MAGIC 0x48544f52u /* 'ROTH' */
+/* v2 (display-pipeline-overhaul): ROTH_FB_MAXW grew 640->896, which shifts every struct field
+ * after pixels[] (key_head oonward) — a real ABI break for any stale prebuilt consumer. Bumping
+ * the magic makes a stale roth-inject/dumpfb/viewer refuse to attach instead of silently reading
+ * garbage at the old offsets; rebuild all of them together (same Makefile) whenever this changes. */
+#define ROTH_SHM_MAGIC 0x324f5452u /* 'RTO2' — v2 layout (ROTH_FB_MAXW=896, + filter_mode) */
 #define ROTH_FB_W 320              /* default (mode 13h) */
 #define ROTH_FB_H 200
-#define ROTH_FB_MAXW 640           /* VESA hi-res (mode 0x101) */
+#define ROTH_FB_MAXW 896           /* widest supported mode (854x480, display-pipeline-overhaul);
+                                    * rounded up from 854 to a multiple of 64 for headroom */
 #define ROTH_FB_MAXH 480
 #define ROTH_FB_MAX (ROTH_FB_MAXW * ROTH_FB_MAXH)
 #define ROTH_KEY_RING 256

@@ -776,9 +776,15 @@ static uint32_t vd_if_set_vesa_video_mode(uint32_t mode)
         G16(VA_g_current_vesa_bank) = 0x378;
         vd_if_set_vesa_bank(0);
     }
-    {   /* [0x854a4] = scale_table[[0x7f358]&0xff] (obj1 0x146e8, staged) — both arms */
+    {   /* [0x854a4] = scale_table[[0x7f358]&0xff] (obj1 0x146e8, staged) — both arms.
+         * Entry 9 is repurposed (display-pipeline-overhaul, see obj1_owned.c) and has no
+         * corresponding aspect dword in the table's 9-dword block (idx*4 for idx=9 would read
+         * into the mode-descriptor block instead) — supply its square-pixel constant directly,
+         * matching the other square-pixel modes (400x300/512x384/640x480, see the decoded dword
+         * values in obj1_owned.c's comment). */
         uint32_t idx = (uint32_t)G32(VA_g_screen_resolution_index) & 0xffu;
-        G32(VA_g_screen_height + 0x4) = G32(VA_g_vesa_scale_and_mode_table + idx * 4);
+        G32(VA_g_screen_height + 0x4) = (idx == 9) ? 0xf5c2
+                                                    : G32(VA_g_vesa_scale_and_mode_table + idx * 4);
     }
     /* common tail 0x14be7 */
     G32(VA_g_video_linear_flag) = (int32_t)(uint32_t)G16(VA_g_current_vesa_mode);
@@ -900,21 +906,30 @@ void alloc_scene_render_arena(void)
 }
 
 /* alloc_framebuffer_surface 0x2fbe8: allocate the back-buffer + DPMI selectors. Two paths by the
- * resolution index [0x7f578]: index 7/8 -> 0x4b000-byte surface + selectors via 0x2fd7c; else ->
- * 0x20000-byte surface + selectors via 0x2fdbc. Each tries a DOS block (alloc_dos_block, [0x89f3a]=1)
- * then falls back to the game heap ([0x89f3a]=0). Returns CF (1 = allocation failed). */
+ * resolution index [0x7f578]: index 7/8/9 -> a surface sized from the mode table (floored at the
+ * historical 0x4b000) + selectors via 0x2fd7c; else -> 0x20000-byte surface + selectors via
+ * 0x2fdbc. Each tries a DOS block (alloc_dos_block, [0x89f3a]=1) then falls back to the game heap
+ * ([0x89f3a]=0). Returns CF (1 = allocation failed).
+ * Index 9 (display-pipeline-overhaul's 854x480 mode, see obj1_owned.c) needs 409920 bytes — more
+ * than the historical fixed 0x4b000 — so the size is now computed from the mode table instead of
+ * hardcoded, which is also the real fix for why 800x600 (the slot 9 used to describe) was always
+ * dead: the old fixed 0x4b000 wouldn't have fit it either. */
 uint32_t alloc_framebuffer_surface(void)
 {
     G16(VA_g_roth_error_code) = 1;
     int32_t res = G32(VA_g_selected_video_mode);
     regs_t io;
-    if (res == 8 || res == 7) {
-        G32(VA_g_framebuffer_bytes) = 0x4b000;
+    if (res == 8 || res == 7 || res == 9) {
+        uint8_t *ent = (uint8_t *)(GADDR(VA_g_vesa_scale_and_mode_table + 0x24) + (uint32_t)res * 0xa);
+        uint32_t w = *(uint16_t *)(ent + 0), h = *(uint16_t *)(ent + 2);
+        uint32_t need = w * h;
+        if (need < 0x4b000u) need = 0x4b000u;   /* never shrink below the historical allocation */
+        G32(VA_g_framebuffer_bytes) = (int32_t)need;
         G8(VA_g_framebuffer_from_dos_block) = 1;
-        uint32_t ptr = alloc_dos_block(0x4b000);  /* [repointed 0x35a12] EAX=size -> ptr */
+        uint32_t ptr = alloc_dos_block(need);  /* [repointed 0x35a12] EAX=size -> ptr */
         if (ptr == 0) {
             G8(VA_g_framebuffer_from_dos_block) = 0;
-            ptr = game_heap_alloc(0x4b000);      /* heap fallback */
+            ptr = game_heap_alloc(need);      /* heap fallback */
             if (ptr == 0) return 1;                     /* stc; ret */
         }
         G32(VA_g_framebuffer_ptr) = (int32_t)ptr; G32(VA_g_init_stage_error_strings + 0x130) = (int32_t)ptr;
