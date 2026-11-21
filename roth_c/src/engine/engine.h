@@ -1450,6 +1450,7 @@ void     key_toggle_sprint(void);                  /* 0x17fed (same wrap tail; m
 void     key_toggle_subtitles(void);               /* 0x1f89b (falls into show_no_ammo_message [L] — direct C) */
 void     key_toggle_easy_select(void);             /* 0x1801c (show_timed_message [L] — direct C) */
 void     key_show_version(void);                   /* 0x14c9c (DEAD; version string 0x767c0) */
+void     das_retry_transient_placeholders(void);
 void     key_flush_texture_cache(void);            /* 0x144fb (DEAD; das reset+flush [L] — call-closed) */
 void     key_quickload(void);                      /* 0x14cc9 (arm savegame request: mode 1) */
 void     key_quicksave(void);                      /* 0x14ce5 (arm savegame request: mode 2) */

@@ -20,6 +20,8 @@
                          * bind to the c2 DOS file contract (os_dos_read / os_dos_lseek) — the
                          * image-free loader pipeline. */
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* read a stored pointer/handle (a runtime address value) out of a canon obj3 global */
 #define PTRG(canon_va) (*(volatile uint32_t *)(uintptr_t)GADDR(canon_va))
@@ -848,8 +850,36 @@ int postprocess_loaded_das_block(uint32_t edx_blk)
  * postprocess, and finally store the slot index into the status entry. AX=FAT index -> CF.
  * Register-transparent in the original (pushes fs/es + all GP regs). Call-closed C except the
  * int21 lseek (g_os_soft_int) and the selector mint inside postprocess. */
+#define DAS_RETRY_MAX 128
+static uint16_t g_das_retry[DAS_RETRY_MAX];
+static unsigned g_das_retry_n;
+
+static void das_giveup_log(const char *why, uint32_t fat2, uint32_t size)
+{
+    static unsigned n;
+    if (n++ < 200 || getenv("ROTH_DAS_TRACE")) {
+        fprintf(stderr, "[das] texture %u unavailable (%s, size=%u, tick=%u): flat placeholder, retry in 32 frames\n",
+                fat2 >> 1, why, size, (unsigned)G16(VA_g_das_cache_tick));
+        fflush(stderr);
+    }
+}
+
+/* per-frame (render_world): re-arm textures that fell back to the flat placeholder only because the cache was
+ * momentarily full, so the next lookup reloads them instead of staying flat until the next level load. */
+void das_retry_transient_placeholders(void)
+{
+    if (g_das_retry_n == 0 || (G16(VA_g_das_cache_tick) & 31) != 0) return;
+    for (unsigned i = 0; i < g_das_retry_n; i++) {
+        uint32_t idx = g_das_retry[i];
+        uint16_t *st = (uint16_t *)(uintptr_t)(GADDR(VA_g_das_entry_status_table) + idx * 2);
+        if ((*st & 0xff) == 0xfd) *st = 0x00ff;
+    }
+    g_das_retry_n = 0;
+}
+
 int load_das_block_for_fat_index(uint32_t eax_in)
 {
+    int transient = 0;
     G8(VA_g_das_special_index_load_flag) = 0;
     uint32_t idx = (uint32_t)(int32_t)(int16_t)(uint16_t)eax_in;   /* cwde */
     uint16_t ax = (uint16_t)idx;
@@ -898,7 +928,7 @@ size_x8:
     PTRG(0x8c72c) <<= 3;                                 /* frame kinds: size *= 8 */
 
 alloc:
-    if (!reserve_das_cache_slot()) goto giveup;   /* jb 0x40ff8 */
+    if (!reserve_das_cache_slot()) { transient = 1; das_giveup_log("no free cache slot", PTRG(0x8c730), PTRG(0x8c72c)); goto giveup; }   /* jb 0x40ff8 */
     {
         uint32_t slot, size, h;
 retry:
@@ -918,6 +948,7 @@ retry:
                                          (int32_t)((size + 0xa + 0x10 + 3) & ~3u));
             if (h == 0) {
                 R8(GADDR(VA_g_das_entry_status_table) + PTRG(0x8c730)) = 0xff;    /* 0x40fea */
+                transient = 1; das_giveup_log("cache pool full", PTRG(0x8c730), size);
                 goto giveup;
             }
         }
@@ -966,6 +997,12 @@ giveup:                                                  /* 0x40ff8 */
     if (PTRG(0x8c730) >= 0x2000) return 1;               /* stc — index out of bitmask range */
     {
         uint32_t i2 = PTRG(0x8c730) >> 1;
+        if (transient && g_das_retry_n < DAS_RETRY_MAX) {
+            g_das_retry[g_das_retry_n++] = (uint16_t)i2;
+            R16(GADDR(VA_g_das_entry_status_table) + i2 * 2) =
+                (uint16_t)(0xfd | ((uint16_t)R8(GADDR(VA_g_texture_flat_color_table) + i2) << 8));
+            return 0;
+        }
         R8(GADDR(VA_g_das_low_index_bitset) + (i2 >> 3)) |= (uint8_t)(1u << (i2 & 7));
         R16(GADDR(VA_g_das_entry_status_table) + i2 * 2) =
             (uint16_t)(0xfd | ((uint16_t)R8(GADDR(VA_g_texture_flat_color_table) + i2) << 8));

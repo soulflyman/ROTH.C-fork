@@ -80,6 +80,7 @@ void setup_frame_render_context(uint32_t eax_record)
 
     tick_ambient_render_animation();                     /* call 0x2ab30 */
     G16(VA_g_das_cache_tick) = (uint16_t)(G16(VA_g_das_cache_tick) + 1);                 /* inc word[0x90c0a] */
+    das_retry_transient_placeholders();
     tick_doors_for_frame();                              /* call 0x3d959 (reads edx=[0x85324]) */
     update_active_sounds();                              /* call 0x27b05 */
     G16(VA_g_floor_tex_caps + 0x42) = 0;                                           /* mov word[0x909f4],0 */
