@@ -356,7 +356,13 @@ static void in_bridge(uint32_t canon_va)
 #ifndef ROTH_STANDALONE
     call_orig(&io);
 #else
-    switch (canon_va) {   /* routes (0x2e609 toggle_video_display_mode = host video, stays fail-loud) */
+    switch (canon_va) {   /* routes */
+    case 0x2e609u:   /* toggle_video_display_mode: the original flips the VGA CRTC between 320x200 and the
+                      * 320x400 double-scan; here there is no VGA hardware, so do the table-level equivalent —
+                      * exactly the flip key_cycle_display_type_alt makes when g_display_type==0 (idx 2 <-> 1).
+                      * Reached once F4 has cycled onto a VGA index (g_display_type=1); previously aborted. */
+        set_resolution_index_and_cycle((G32(VA_g_screen_resolution_index) == 2) ? 1u : 2u);
+        return;
     case 0x1480cu: cycle_screen_resolution(); return;
     case 0x11135u: take_snapshot(); return;
     default: break;
