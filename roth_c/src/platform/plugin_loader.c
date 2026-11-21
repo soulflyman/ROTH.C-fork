@@ -76,6 +76,160 @@ void roth_sdk_set_display_filter(uint32_t linear) { if (g_shm) g_shm->filter_mod
  * of assuming nearest. */
 uint32_t roth_sdk_get_display_filter(void) { return g_shm ? g_shm->filter_mode : 0u; }
 
+
+/* ===================== settings registry (SDK 0.8) =====================
+ * Plugins register typed settings from on_load (MAIN only); an overlay plugin enumerates them and edits
+ * the mod-owned value words, then calls setting_commit. Values persist to <game>/mods/_settings.cfg as
+ * "<owner id>.<key> = value" lines and are applied into *value at registration time, so a mod needs no
+ * cfg code of its own. Plain C stdio only (this TU is built by the Windows cross gate). */
+#define SET_MAX      256
+#define PERS_MAX     512
+#define PERS_KEY_MAX 220
+#define PERS_VAL_MAX 48
+
+static struct roth_setting_v1 g_settings[SET_MAX];
+static int g_nsettings;
+static int g_cur_slot = -1;                    /* plugin whose on_load is running (-1 outside MAIN on_load) */
+static char g_mods_dir[1024];
+
+typedef struct { char key[PERS_KEY_MAX]; char val[PERS_VAL_MAX]; } pers_t;
+static pers_t g_pers[PERS_MAX];
+static int g_npers;
+
+static pers_t *pers_find(const char *key)
+{
+    for (int i = 0; i < g_npers; i++)
+        if (!strcmp(g_pers[i].key, key)) return &g_pers[i];
+    return NULL;
+}
+
+static void pers_set(const char *key, const char *val)
+{
+    pers_t *p = pers_find(key);
+    if (!p) {
+        if (g_npers >= PERS_MAX) return;
+        p = &g_pers[g_npers++];
+        snprintf(p->key, sizeof p->key, "%s", key);
+    }
+    snprintf(p->val, sizeof p->val, "%s", val);
+}
+
+static char *trim(char *s)
+{
+    while (*s == ' ' || *s == '\t') s++;
+    char *e = s + strlen(s);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) *--e = '\0';
+    return s;
+}
+
+static void pers_path(char *out, size_t n, const char *suffix)
+{
+    snprintf(out, n, "%s/_settings.cfg%s", g_mods_dir, suffix);
+}
+
+static void pers_load(void)
+{
+    char path[1100];
+    pers_path(path, sizeof path, "");
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    char line[512];
+    while (fgets(line, sizeof line, f)) {
+        char *h = strchr(line, '#'); if (h) *h = '\0';
+        char *eq = strchr(line, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *k = trim(line), *v = trim(eq + 1);
+        if (*k && *v) pers_set(k, v);
+    }
+    fclose(f);
+}
+
+static void setting_pers_key(char *out, size_t n, const struct roth_setting_v1 *s)
+{
+    snprintf(out, n, "%s.%s", s->owner_id, s->key);
+}
+
+static void setting_value_str(char *out, size_t n, const struct roth_setting_v1 *s)
+{
+    if (s->type == ROTH_SETTING_FLOAT) snprintf(out, n, "%g", (double)*(const float *)s->value);
+    else                               snprintf(out, n, "%d", (int)*(const int32_t *)s->value);
+}
+
+static void pers_save(void)
+{
+    char key[PERS_KEY_MAX], val[PERS_VAL_MAX];
+    for (int i = 0; i < g_nsettings; i++) {          /* sync live values into the table */
+        setting_pers_key(key, sizeof key, &g_settings[i]);
+        setting_value_str(val, sizeof val, &g_settings[i]);
+        pers_set(key, val);
+    }
+    char tmp[1100], path[1100];
+    pers_path(tmp, sizeof tmp, ".tmp");
+    pers_path(path, sizeof path, "");
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    fprintf(f, "# ROTH.C mod settings — written by the settings overlay; one \"<plugin id>.<key> = value\" per line.\n");
+    for (int i = 0; i < g_npers; i++)
+        fprintf(f, "%s = %s\n", g_pers[i].key, g_pers[i].val);
+    fclose(f);
+    remove(path);                                    /* Windows rename() fails onto an existing file */
+    if (rename(tmp, path) != 0) LOGE("[plugins] cannot write %s\n", path);
+}
+
+static void setting_apply_saved(struct roth_setting_v1 *s)
+{
+    char key[PERS_KEY_MAX];
+    setting_pers_key(key, sizeof key, s);
+    const pers_t *p = pers_find(key);
+    if (!p) return;
+    if (s->type == ROTH_SETTING_FLOAT) {
+        float v = (float)atof(p->val);
+        if (s->fmax > s->fmin) { if (v < s->fmin) v = s->fmin; if (v > s->fmax) v = s->fmax; }
+        *(float *)s->value = v;
+        return;
+    }
+    int32_t v = (int32_t)atoi(p->val);
+    if (s->type == ROTH_SETTING_BOOL) v = v != 0;
+    else if (s->type == ROTH_SETTING_KEY) { if (v < 0 || v > 0x7f) return; }
+    else if (s->imax >= s->imin) { if (v < s->imin) v = s->imin; if (v > s->imax) v = s->imax; }
+    *(int32_t *)s->value = v;
+}
+
+/* roth_api_v1->register_setting: MAIN only (inside on_load). Copies the descriptor (not the strings). */
+int32_t roth_sdk_register_setting(const struct roth_setting_v1 *in)
+{
+    if (g_cur_slot < 0 || !in || g_nsettings >= SET_MAX) return -1;
+    if (in->struct_size < offsetof(struct roth_setting_v1, owner_id)) return -1;
+    if (!in->key || !in->label || !in->value || in->type > ROTH_SETTING_FLOAT) return -1;
+    if (in->type == ROTH_SETTING_ENUM && (!in->enum_names || in->imax < 0)) return -1;
+    struct roth_setting_v1 *s = &g_settings[g_nsettings];
+    memset(s, 0, sizeof *s);
+    memcpy(s, in, in->struct_size < sizeof *s ? in->struct_size : sizeof *s);   /* append-only growth */
+    s->struct_size = (uint32_t)sizeof *s;
+    s->owner_id   = g_pl[g_cur_slot].id;
+    s->owner_name = (g_pl[g_cur_slot].info->name && g_pl[g_cur_slot].info->name[0]) ? g_pl[g_cur_slot].info->name
+                                                                                    : g_pl[g_cur_slot].id;
+    for (int i = 0; i < g_nsettings; i++)            /* (owner,key) must be unique */
+        if (!strcmp(g_settings[i].owner_id, s->owner_id) && !strcmp(g_settings[i].key, s->key)) return -1;
+    setting_apply_saved(s);
+    return g_nsettings++;
+}
+
+uint32_t roth_sdk_setting_count(void) { return (uint32_t)g_nsettings; }
+
+const struct roth_setting_v1 *roth_sdk_setting_at(uint32_t i)
+{
+    return (i < (uint32_t)g_nsettings) ? &g_settings[i] : NULL;
+}
+
+void roth_sdk_setting_commit(uint32_t i)
+{
+    if (i >= (uint32_t)g_nsettings) return;
+    if (g_settings[i].on_change) g_settings[i].on_change();
+    pers_save();
+}
+
 static int      g_opt_no_mods, g_opt_strict, g_opt_list, g_opt_dump;
 static int      g_discovered;                  /* discovery ran (guards a double discover) */
 static int      g_frame_seam_installed;
@@ -386,11 +540,15 @@ void plugins_load(const char *game_dir)
     }
     discover(game_dir);
     report();
+    snprintf(g_mods_dir, sizeof g_mods_dir, "%s/mods", game_dir ? game_dir : ".");
+    pers_load();                                    /* saved setting values, applied at register time */
     /* on_load(MAIN): after ALL validation, before any engine thread starts (§10.3). */
     for (int i = 0; i < g_npl; i++)
         if (PL_HAS(g_pl[i].info, on_load) && g_pl[i].info->on_load) {
             g_cur_dispatch_dir = g_pl[i].dir;           /* api->plugin_dir() valid inside the callback */
+            g_cur_slot = i;                             /* register_setting is legal only here */
             g_pl[i].info->on_load(&roth_host_api_v1);
+            g_cur_slot = -1;
             g_cur_dispatch_dir = NULL;
         }
     install_frame_seam();

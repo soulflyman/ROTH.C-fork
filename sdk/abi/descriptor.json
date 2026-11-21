@@ -2,14 +2,14 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 7,
+ "sdk_minor": 8,
  "abi_major": 0,
- "abi_minor": 7,
+ "abi_minor": 8,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
   "roth_api_v1": {
-   "size": 28,
+   "size": 44,
    "fields": [
     {
      "name": "abi_major",
@@ -58,6 +58,30 @@
     {
      "name": "get_display_filter",
      "offset": 24,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "register_setting",
+     "offset": 28,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "setting_count",
+     "offset": 32,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "setting_at",
+     "offset": 36,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "setting_commit",
+     "offset": 40,
      "size": 4,
      "kind": "fnptr"
     }
@@ -641,6 +665,123 @@
      "offset": 12,
      "size": 4,
      "kind": "uint32"
+    }
+   ]
+  },
+  "roth_setting_v1": {
+   "size": 64,
+   "fields": [
+    {
+     "name": "struct_size",
+     "type": "uint32_t",
+     "offset": 0,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "key",
+     "type": "const char *",
+     "offset": 4,
+     "size": 4,
+     "kind": "ptr"
+    },
+    {
+     "name": "label",
+     "type": "const char *",
+     "offset": 8,
+     "size": 4,
+     "kind": "ptr"
+    },
+    {
+     "name": "group",
+     "type": "const char *",
+     "offset": 12,
+     "size": 4,
+     "kind": "ptr"
+    },
+    {
+     "name": "type",
+     "type": "uint32_t",
+     "offset": 16,
+     "size": 4,
+     "kind": "uint32"
+    },
+    {
+     "name": "value",
+     "type": "void *",
+     "offset": 20,
+     "size": 4,
+     "kind": "ptr"
+    },
+    {
+     "name": "imin",
+     "type": "int32_t",
+     "offset": 24,
+     "size": 4,
+     "kind": "int32"
+    },
+    {
+     "name": "imax",
+     "type": "int32_t",
+     "offset": 28,
+     "size": 4,
+     "kind": "int32"
+    },
+    {
+     "name": "istep",
+     "type": "int32_t",
+     "offset": 32,
+     "size": 4,
+     "kind": "int32"
+    },
+    {
+     "name": "fmin",
+     "type": "float",
+     "offset": 36,
+     "size": 4,
+     "kind": "float"
+    },
+    {
+     "name": "fmax",
+     "type": "float",
+     "offset": 40,
+     "size": 4,
+     "kind": "float"
+    },
+    {
+     "name": "fstep",
+     "type": "float",
+     "offset": 44,
+     "size": 4,
+     "kind": "float"
+    },
+    {
+     "name": "enum_names",
+     "type": "const char *const *",
+     "offset": 48,
+     "size": 4,
+     "kind": "ptr"
+    },
+    {
+     "name": "on_change",
+     "type": "roth_setting_changed_fn",
+     "offset": 52,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "owner_id",
+     "type": "const char *",
+     "offset": 56,
+     "size": 4,
+     "kind": "ptr"
+    },
+    {
+     "name": "owner_name",
+     "type": "const char *",
+     "offset": 60,
+     "size": 4,
+     "kind": "ptr"
     }
    ]
   },

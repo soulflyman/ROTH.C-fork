@@ -4,10 +4,10 @@
 
  "version": {
   "sdk_major": 0,
-  "sdk_minor": 7,
+  "sdk_minor": 8,
   "abi_major": 0,
-  "abi_minor": 7,
-  "load_rule": "A plugin loads iff abi_major == host.abi_major AND abi_minor <= host.abi_minor. Additive growth = minor bump; any breaking change = major bump. CI (tools/sdk_check.py) enforces the bump against sdk/abi/released/. THE EXPOSED-ORDER LAW (coordinator ruling 2026-07-11, fixing review finding 9 structurally): the engine-call table's slot order = EXPOSURE ORDER — the ordered STARTER_SET list in tools/sdk_extract_signatures.py IS the table order, frozen as ABI; new exposures are APPENDED at its end, so existing slot offsets never move and every exposure is a true append-only minor bump, forever. CI gate 'exposure-order' enforces prefix-stability of the table against the released baseline (a re-sort/insert/removal fails hard; no version bump excuses it). v0.7 appends three engine slots at the tail — reset_weapon_fire_timing (0x1765c, slot 24), activate_weapon_item (0x184ab, slot 25) and render_weapon_hud (0x24165, slot 26): the exact weapon-equip sequence the engine's own number-key handler runs, so a mod can equip a weapon from its own inventory UI (GAME context only). v0.6 (display-pipeline overhaul) appends two host_api fields at the tail — set_display_filter and get_display_filter — host/platform services (NOT original-engine calls, so they live on roth_api_v1 directly beside plugin_dir, not in the engine sub-table), letting a plugin switch and read back the in-process SDL presenter's upscale filter (nearest/linear) live. v0.5 (two-flavor ruling / doc_viewer runtime-plugin port, task #103) appends two engine slots at the tail — blit_das_image_to_buffer (0x1325b, slot 22) and draw_popup_shadow_border_smc (0x12dde, slot 23), both proven reuse points in sdk/examples/doc_viewer — growing the exposed set 22 -> 24 with the v0.4 slots byte-identical. v0.4 APPENDED (all trailing): game_ram->to_ptr, struct roth_mouse_poll_v1, the on_scancode/on_mouse_poll seam callbacks, and roth_api_v1->plugin_dir()."
+  "abi_minor": 8,
+  "load_rule": "A plugin loads iff abi_major == host.abi_major AND abi_minor <= host.abi_minor. Additive growth = minor bump; any breaking change = major bump. CI (tools/sdk_check.py) enforces the bump against sdk/abi/released/. THE EXPOSED-ORDER LAW (coordinator ruling 2026-07-11, fixing review finding 9 structurally): the engine-call table's slot order = EXPOSURE ORDER — the ordered STARTER_SET list in tools/sdk_extract_signatures.py IS the table order, frozen as ABI; new exposures are APPENDED at its end, so existing slot offsets never move and every exposure is a true append-only minor bump, forever. CI gate 'exposure-order' enforces prefix-stability of the table against the released baseline (a re-sort/insert/removal fails hard; no version bump excuses it). v0.8 adds the settings registry: struct roth_setting_v1 (+ enum roth_setting_type, roth_setting_changed_fn) and four host_api fields appended after get_display_filter — register_setting (MAIN only), setting_count, setting_at, setting_commit — so any plugin can add typed entries to the _settings overlay; the host persists them to mods/_settings.cfg. v0.7 appends three engine slots at the tail — reset_weapon_fire_timing (0x1765c, slot 24), activate_weapon_item (0x184ab, slot 25) and render_weapon_hud (0x24165, slot 26): the exact weapon-equip sequence the engine's own number-key handler runs, so a mod can equip a weapon from its own inventory UI (GAME context only). v0.6 (display-pipeline overhaul) appends two host_api fields at the tail — set_display_filter and get_display_filter — host/platform services (NOT original-engine calls, so they live on roth_api_v1 directly beside plugin_dir, not in the engine sub-table), letting a plugin switch and read back the in-process SDL presenter's upscale filter (nearest/linear) live. v0.5 (two-flavor ruling / doc_viewer runtime-plugin port, task #103) appends two engine slots at the tail — blit_das_image_to_buffer (0x1325b, slot 22) and draw_popup_shadow_border_smc (0x12dde, slot 23), both proven reuse points in sdk/examples/doc_viewer — growing the exposed set 22 -> 24 with the v0.4 slots byte-identical. v0.4 APPENDED (all trailing): game_ram->to_ptr, struct roth_mouse_poll_v1, the on_scancode/on_mouse_poll seam callbacks, and roth_api_v1->plugin_dir()."
  },
 
  "contexts": {
@@ -49,12 +49,48 @@
   ]
  },
 
+ "settings": {
+  "note": "The host-side settings registry (SDK 0.8). A plugin registers named, typed settings from its on_load (MAIN only); an overlay plugin (the _settings mod) enumerates them and edits the mod-owned value words, then calls setting_commit. The host copies the descriptor struct but NOT the strings/arrays it points at (those must be static), stamps owner_id/owner_name from the registering plugin, applies any persisted value into *value at registration time, and persists on commit. The value is a plain aligned 32-bit word (int32_t, or float for ROTH_SETTING_FLOAT): the overlay writes it in GAME context, the owner may read it from any context; there is no ordering guarantee between different settings.",
+  "struct_name": "roth_setting_v1",
+  "enum_name": "roth_setting_type",
+  "enum_values": [
+   {"name": "ROTH_SETTING_BOOL",  "value": 0, "desc": "*value is an int32_t, 0 / 1"},
+   {"name": "ROTH_SETTING_INT",   "value": 1, "desc": "*value is an int32_t in [imin, imax], adjusted by istep"},
+   {"name": "ROTH_SETTING_ENUM",  "value": 2, "desc": "*value is an int32_t index into enum_names (0..imax)"},
+   {"name": "ROTH_SETTING_KEY",   "value": 3, "desc": "*value is an int32_t PC set-1 make scancode; the overlay captures the next key"},
+   {"name": "ROTH_SETTING_FLOAT", "value": 4, "desc": "*value is a float in [fmin, fmax], adjusted by fstep"}
+  ],
+  "changed_typedef": {"name": "roth_setting_changed_fn", "desc": "optional per-setting callback, run in GAME context after the overlay committed a new value"},
+  "fields": [
+   {"name": "struct_size", "type": "uint32_t", "desc": "sizeof(struct roth_setting_v1) at the plugin's build time (append-only growth)"},
+   {"name": "key",         "type": "const char *", "desc": "unique within the owner, e.g. \"toggle_key\" (also the persistence key)"},
+   {"name": "label",       "type": "const char *", "desc": "text shown in the menu"},
+   {"name": "group",       "type": "const char *", "desc": "optional sub-heading, may be NULL"},
+   {"name": "type",        "type": "uint32_t",     "desc": "enum roth_setting_type"},
+   {"name": "value",       "type": "void *",       "desc": "int32_t* (BOOL/INT/ENUM/KEY) or float* (FLOAT); mod-owned, static lifetime"},
+   {"name": "imin",        "type": "int32_t",      "desc": "INT range minimum"},
+   {"name": "imax",        "type": "int32_t",      "desc": "INT range maximum / ENUM last index"},
+   {"name": "istep",       "type": "int32_t",      "desc": "INT step (>= 1)"},
+   {"name": "fmin",        "type": "float",        "desc": "FLOAT range minimum"},
+   {"name": "fmax",        "type": "float",        "desc": "FLOAT range maximum"},
+   {"name": "fstep",       "type": "float",        "desc": "FLOAT step"},
+   {"name": "enum_names",  "type": "const char *const *", "desc": "ENUM: imax+1 static names"},
+   {"name": "on_change",   "typedef": "roth_setting_changed_fn", "desc": "optional; GAME context, after commit"},
+   {"name": "owner_id",    "type": "const char *", "desc": "OUTPUT, host-filled: the registering plugin's id"},
+   {"name": "owner_name",  "type": "const char *", "desc": "OUTPUT, host-filled: the registering plugin's display name"}
+  ]
+ },
+
  "host_api": {
   "note": "Host services on the top-level roth_api_v1 table beyond the engine/game_ram sub-tables (appended after game_ram; design 10). plugin_dir is loader-provided plugin identity: the directory of the plugin whose MAIN lifecycle callback (on_load / on_game_ram_ready / on_register_overrides / on_unload) is currently executing — i.e. mods/<name>/, the folder beside its plugin.so — so a plugin can locate its cfg/assets without knowing the game dir or its own name. Returns \"\" outside a MAIN dispatch (its value is only meaningful while a MAIN callback runs single-threaded at boot).",
   "fields": [
    {"name": "plugin_dir", "ret": "const char *", "params": [], "host_symbol": "roth_sdk_current_plugin_dir", "desc": "directory of the currently-dispatching plugin (valid during MAIN lifecycle callbacks; \"\" otherwise)"},
    {"name": "set_display_filter", "ret": "void", "params": [{"type": "uint32_t", "name": "linear"}], "host_symbol": "roth_sdk_set_display_filter", "desc": "set the in-process SDL presenter's final upscale filter: 0 = nearest (crisp, default), nonzero = linear (softer). Safe from GAME context; takes effect on the next presented frame. No-op if no SDL presenter is attached (e.g. a pure --headless run)."},
-   {"name": "get_display_filter", "ret": "uint32_t", "params": [], "host_symbol": "roth_sdk_get_display_filter", "desc": "read back the current upscale filter (0 = nearest, nonzero = linear) — lets a plugin reflect the true live state (e.g. seeded from --filter/ROTH_FILTER at boot) instead of assuming a default. Returns 0 if no SDL presenter is attached."}
+   {"name": "get_display_filter", "ret": "uint32_t", "params": [], "host_symbol": "roth_sdk_get_display_filter", "desc": "read back the current upscale filter (0 = nearest, nonzero = linear) — lets a plugin reflect the true live state (e.g. seeded from --filter/ROTH_FILTER at boot) instead of assuming a default. Returns 0 if no SDL presenter is attached."},
+   {"name": "register_setting", "ret": "int32_t", "params": [{"type": "const struct roth_setting_v1 *", "name": "s"}], "host_symbol": "roth_sdk_register_setting", "desc": "register one setting (MAIN context only, i.e. from on_load); returns its registry index, or -1 outside MAIN / on a bad descriptor. The host stamps owner_id/owner_name and applies any persisted value into *s->value."},
+   {"name": "setting_count", "ret": "uint32_t", "params": [], "host_symbol": "roth_sdk_setting_count", "desc": "number of registered settings (stable once every on_load has run)"},
+   {"name": "setting_at", "ret": "const struct roth_setting_v1 *", "params": [{"type": "uint32_t", "name": "i"}], "host_symbol": "roth_sdk_setting_at", "desc": "registry entry i (NULL if out of range); the pointer stays valid for the process lifetime"},
+   {"name": "setting_commit", "ret": "void", "params": [{"type": "uint32_t", "name": "i"}], "host_symbol": "roth_sdk_setting_commit", "desc": "call after changing *value of entry i: runs its on_change (GAME context) and persists the value"}
   ]
  },
 

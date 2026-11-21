@@ -177,6 +177,24 @@ def _plugin_layout(fields):
     return rows, size
 
 
+def _setting_layout(fields):
+    """i386 layout for the settings struct (natural alignment). Unlike _plugin_layout this labels
+    scalars precisely (uint32/int32/float/ptr/fnptr) — it is only used for the NEW struct, so the
+    already-frozen kind labels of the older structs are untouched."""
+    kinds = {"uint32_t": ("uint32", 4), "int32_t": ("int32", 4), "float": ("float", 4)}
+    rows, off = [], 0
+    for f in fields:
+        if f.get("typedef"):
+            kind, sz, t = "fnptr", PTR, f["typedef"]
+        else:
+            t = f["type"]
+            kind, sz = kinds.get(t, ("ptr", PTR))
+        off = (off + sz - 1) & ~(sz - 1)
+        rows.append({"name": f["name"], "type": t, "offset": off, "size": sz, "kind": kind})
+        off += sz
+    return rows, (off + PTR - 1) & ~(PTR - 1)
+
+
 def _gen_overrides_api(w, api):
     """Emit the hand-curated registration surface: the roth_register_override_fn typedef, the
     roth_registrar_v1 struct the host hands on_register_overrides, and the roth_override() macro."""
@@ -355,6 +373,25 @@ def gen_header(exposed, sigs, api):
         w("    " + _fnptr(a["ret"], a["params"], a["name"]) + f"  /* {a['desc']} */")
     w("};")
     w("")
+    st = api.get("settings")   # public struct taken by pointer from the host_api fields — emit before them
+    if st:
+        w("/* ---- settings registry (SDK 0.8): see sdk_api.json \"settings\" ----------------------- */")
+        w(f"enum {st['enum_name']} {{")
+        for v in st["enum_values"]:
+            w(f"    {v['name']} = {v['value']},  /* {v['desc']} */")
+        w("};")
+        ct = st["changed_typedef"]
+        w(f"typedef void (ROTH_CDECL *{ct['name']})(void);  /* {ct['desc']} */")
+        w(f"struct {st['struct_name']} {{")
+        for f in st["fields"]:
+            if f.get("typedef"):
+                w(f"    {f['typedef']} {f['name']};" + (f"  /* {f['desc']} */" if f.get("desc") else ""))
+            else:
+                t = f["type"]
+                sep = "" if t.endswith("*") else " "
+                w(f"    {t}{sep}{f['name']};" + (f"  /* {f['desc']} */" if f.get("desc") else ""))
+        w("};")
+        w("")
     w("/* ---- the host-provided API table (abi header first) ---------------------- */")
     w(f"struct {API_STRUCT} {{")
     w("    uint16_t abi_major;")
@@ -454,6 +491,11 @@ def gen_descriptor(exposed, api):
     if mp:
         mp_rows, mp_size = _plugin_layout(mp["fields"])
         structs[mp["struct_name"]] = {"size": mp_size, "fields": mp_rows}
+    # settings registry descriptor struct (SDK 0.8) — tracked so abi-probe verifies its i386 layout.
+    st = api.get("settings")
+    if st:
+        st_rows, st_size = _setting_layout(st["fields"])
+        structs[st["struct_name"]] = {"size": st_size, "fields": st_rows}
     # plugin-side info struct — tracked so abi-probe verifies its i386 layout.
     pl = api.get("plugin")
     if pl:

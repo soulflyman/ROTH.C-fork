@@ -21,9 +21,9 @@ extern "C" {
 
 /* ---- versions ------------------------------------------------------------ */
 #define ROTH_SDK_MAJOR 0
-#define ROTH_SDK_MINOR 7
+#define ROTH_SDK_MINOR 8
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 7
+#define ROTH_ABI_MINOR 8
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
@@ -1247,6 +1247,34 @@ struct roth_game_ram_api_v1 {
     void *(ROTH_CDECL *to_ptr)(uint32_t);  /* resolve a canonical VA (game_ram offset) to its host pointer (base+off); NULL if out of range. The VA->host-pointer op: use it to form a game_ram pointer to pass to an exposed engine fn, or to match a stored runtime code/data pointer (which the engine writes as VA+base). Do NOT deref beyond the named global's extent; never cache across an engine call/tick. */
 };
 
+/* ---- settings registry (SDK 0.8): see sdk_api.json "settings" ----------------------- */
+enum roth_setting_type {
+    ROTH_SETTING_BOOL = 0,  /* *value is an int32_t, 0 / 1 */
+    ROTH_SETTING_INT = 1,  /* *value is an int32_t in [imin, imax], adjusted by istep */
+    ROTH_SETTING_ENUM = 2,  /* *value is an int32_t index into enum_names (0..imax) */
+    ROTH_SETTING_KEY = 3,  /* *value is an int32_t PC set-1 make scancode; the overlay captures the next key */
+    ROTH_SETTING_FLOAT = 4,  /* *value is a float in [fmin, fmax], adjusted by fstep */
+};
+typedef void (ROTH_CDECL *roth_setting_changed_fn)(void);  /* optional per-setting callback, run in GAME context after the overlay committed a new value */
+struct roth_setting_v1 {
+    uint32_t struct_size;  /* sizeof(struct roth_setting_v1) at the plugin's build time (append-only growth) */
+    const char *key;  /* unique within the owner, e.g. "toggle_key" (also the persistence key) */
+    const char *label;  /* text shown in the menu */
+    const char *group;  /* optional sub-heading, may be NULL */
+    uint32_t type;  /* enum roth_setting_type */
+    void *value;  /* int32_t* (BOOL/INT/ENUM/KEY) or float* (FLOAT); mod-owned, static lifetime */
+    int32_t imin;  /* INT range minimum */
+    int32_t imax;  /* INT range maximum / ENUM last index */
+    int32_t istep;  /* INT step (>= 1) */
+    float fmin;  /* FLOAT range minimum */
+    float fmax;  /* FLOAT range maximum */
+    float fstep;  /* FLOAT step */
+    const char *const *enum_names;  /* ENUM: imax+1 static names */
+    roth_setting_changed_fn on_change;  /* optional; GAME context, after commit */
+    const char *owner_id;  /* OUTPUT, host-filled: the registering plugin's id */
+    const char *owner_name;  /* OUTPUT, host-filled: the registering plugin's display name */
+};
+
 /* ---- the host-provided API table (abi header first) ---------------------- */
 struct roth_api_v1 {
     uint16_t abi_major;
@@ -1257,6 +1285,10 @@ struct roth_api_v1 {
     const char *(ROTH_CDECL *plugin_dir)(void);  /* directory of the currently-dispatching plugin (valid during MAIN lifecycle callbacks; "" otherwise) */
     void (ROTH_CDECL *set_display_filter)(uint32_t);  /* set the in-process SDL presenter's final upscale filter: 0 = nearest (crisp, default), nonzero = linear (softer). Safe from GAME context; takes effect on the next presented frame. No-op if no SDL presenter is attached (e.g. a pure --headless run). */
     uint32_t (ROTH_CDECL *get_display_filter)(void);  /* read back the current upscale filter (0 = nearest, nonzero = linear) — lets a plugin reflect the true live state (e.g. seeded from --filter/ROTH_FILTER at boot) instead of assuming a default. Returns 0 if no SDL presenter is attached. */
+    int32_t (ROTH_CDECL *register_setting)(const struct roth_setting_v1 *);  /* register one setting (MAIN context only, i.e. from on_load); returns its registry index, or -1 outside MAIN / on a bad descriptor. The host stamps owner_id/owner_name and applies any persisted value into *s->value. */
+    uint32_t (ROTH_CDECL *setting_count)(void);  /* number of registered settings (stable once every on_load has run) */
+    const struct roth_setting_v1 *(ROTH_CDECL *setting_at)(uint32_t);  /* registry entry i (NULL if out of range); the pointer stays valid for the process lifetime */
+    void (ROTH_CDECL *setting_commit)(uint32_t);  /* call after changing *value of entry i: runs its on_change (GAME context) and persists the value */
 };
 
 /* ---- context-tagged lifecycle callbacks ---------------------------------- */
