@@ -434,7 +434,8 @@ static char g_game_dir[2600];
 #define ROW_RES    3
 #define REG_BASE   4
 #define REGROWS_MAX 600
-typedef struct { const struct roth_setting_v1 *s; uint32_t idx; const char *title; } regrow_t;  /* title!=NULL: header */
+typedef struct { const struct roth_setting_v1 *s; uint32_t idx; const char *title; int level; } regrow_t;  /* title!=NULL: header; level = indent steps */
+#define INDENT_PX 12   /* two characters per level */
 static regrow_t g_regrows[REGROWS_MAX];
 static volatile int g_nregrows;
 static int g_regrows_built;
@@ -813,14 +814,17 @@ static void build_regrows(const struct roth_api_v1 *api)
         const struct roth_setting_v1 *s = api->setting_at(i);
         if (!s) continue;
         if (!last_owner || strcmp(last_owner, s->owner_id) != 0) {
-            g_regrows[n].s = NULL; g_regrows[n].idx = 0; g_regrows[n].title = s->owner_name; n++;
+            g_regrows[n].s = NULL; g_regrows[n].idx = 0; g_regrows[n].title = s->owner_name; g_regrows[n].level = 0; n++;
             last_owner = s->owner_id; last_group = NULL;
         }
         if (s->group && (!last_group || strcmp(last_group, s->group) != 0)) {
-            g_regrows[n].s = NULL; g_regrows[n].idx = 0; g_regrows[n].title = s->group; n++;
+            g_regrows[n].s = NULL; g_regrows[n].idx = 0; g_regrows[n].title = s->group; g_regrows[n].level = 1; n++;
             last_group = s->group;
+        } else if (!s->group) {
+            last_group = NULL;                          /* an ungrouped setting sits directly under the owner */
         }
-        g_regrows[n].s = s; g_regrows[n].idx = i; g_regrows[n].title = NULL; n++;
+        g_regrows[n].s = s; g_regrows[n].idx = i; g_regrows[n].title = NULL;
+        g_regrows[n].level = last_group ? 2 : 1; n++;
     }
     g_nregrows = n;                                 /* published last */
 }
@@ -975,10 +979,10 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
                 snprintf(tt, sizeof tt, "%.36s", rr->title);
                 char *par = strchr(tt, '('); if (par) { *par = '\0'; while (par > tt && par[-1] == ' ') *--par = '\0'; }
                 snprintf(buf, sizeof buf, "- %.30s -", tt);
-                draw_string(pixels, width, height, list_x, y, buf, COL_TEXT, 1);
+                draw_string(pixels, width, height, list_x + rr->level * INDENT_PX, y, buf, COL_TEXT, 1);
             } else {
                 const struct roth_setting_v1 *rs = rr->s;
-                draw_string(pixels, width, height, list_x, y, rs->label, COL_TEXT, 1);
+                draw_string(pixels, width, height, list_x + rr->level * INDENT_PX, y, rs->label, COL_TEXT, 1);
                 if (rs->type == ROTH_SETTING_BOOL) {
                     snprintf(buf, sizeof buf, "%s", *(const int32_t *)rs->value ? "ON" : "OFF");
                 } else if (rs->type == ROTH_SETTING_INT) {
@@ -1006,7 +1010,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
             char namebuf[24];
             snprintf(namebuf, sizeof namebuf, "%.20s", act->name);
             for (char *pc = namebuf; *pc; pc++) if (*pc == '_') *pc = ' ';
-            draw_string(pixels, width, height, list_x, y, namebuf, COL_TEXT, 1);
+            draw_string(pixels, width, height, list_x + INDENT_PX, y, namebuf, COL_TEXT, 1);
             const char *kn = keyname_of(g_action_sc[ai]);
             char keybuf[16];
             if (kn) snprintf(keybuf, sizeof keybuf, "%s", kn);
