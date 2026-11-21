@@ -3,6 +3,7 @@
  *
  *   roth-inject              -> print frame counter + non-black pixel count
  *   roth-inject key <hex>... -> push set-1 scancodes (make), then break codes
+ *   roth-inject hold <hex> <ms> -> make code, hold, break code (auto-repeat tests)
  *   roth-inject filter <0|1> -> set g_shm->filter_mode (0=nearest, 1=linear),
  *                               exactly what roth_api_v1->set_display_filter() does
  */
@@ -39,6 +40,18 @@ int main(int argc, char **argv)
             s->key_head++;
         }
         printf("sent %d key(s)\n", argc - 2);
+        return 0;
+    }
+
+    /* roth-inject hold <hex> <ms>: make code, hold for <ms>, then the break code (typematic/auto-repeat tests) */
+    if (argc == 4 && !strcmp(argv[1], "hold")) {
+        uint8_t mk = (uint8_t)strtol(argv[2], NULL, 16);
+        s->key_ring[s->key_head & ROTH_KEY_MASK] = mk;
+        s->key_head++;
+        usleep((useconds_t)strtol(argv[3], NULL, 10) * 1000);
+        s->key_ring[s->key_head & ROTH_KEY_MASK] = mk | 0x80;
+        s->key_head++;
+        printf("held %s for %s ms\n", argv[2], argv[3]);
         return 0;
     }
 

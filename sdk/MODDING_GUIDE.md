@@ -189,6 +189,10 @@ call `api->register_setting(&desc)` from `on_load` (**MAIN only** — it returns
 scancode (the overlay captures the next key press). All strings must be static — the host copies the
 struct, not what it points at. `on_change` is optional and runs in GAME context after the overlay commits.
 
+In the `_settings` overlay each registering plugin gets its own block (its `name` up to the first `(` is the
+heading, `group` becomes a sub-heading). One group name is special: settings with `group = "DISPLAY"` are
+listed in the overlay's built-in DISPLAY section next to the resolution row, whichever plugin registered them.
+
 The host remembers the values for you: it applies the saved value into `*value` while you register
 (so read it any time after `on_load`) and persists changes to `<game>/mods/_settings.cfg`
 (`<plugin id>.<key> = value`). Your plugin needs no cfg code.

@@ -426,24 +426,21 @@ static char g_res_status[24];
 static char g_game_dir[2600];
 
 
-#define ROW_YAW    0
-#define ROW_PITCH  1
-#define ROW_INVERT 2
-/* Row layout: 0-3 built-ins (yaw, pitch, invert, resolution) | REG_BASE.. registry section (headers + settings; g_nregrows rows, filled
- * once at the first on_frame_game, when every plugin's on_load has run) | KEY BINDINGS label | actions. */
-#define ROW_RES    3
-#define REG_BASE   4
-#define REGROWS_MAX 600
-typedef struct { const struct roth_setting_v1 *s; uint32_t idx; const char *title; int level; } regrow_t;  /* title!=NULL: header; level = indent steps */
-#define INDENT_PX 12   /* two characters per level */
-static regrow_t g_regrows[REGROWS_MAX];
-static volatile int g_nregrows;
-static int g_regrows_built;
-#define REG_END         (REG_BASE + g_nregrows)
-#define ROW_LABEL       REG_END
-#define ROW_ACTION_BASE (ROW_LABEL + 1)
-#define NUM_ROWS        (ROW_ACTION_BASE + NUM_ACTIONS)
-#define IN_REG(r)       ((r) >= REG_BASE && (r) < REG_END)
+/* ---- row model. One flat list, built once at the first on_frame_game (when every plugin's on_load has run):
+ * category headers (level 0), sub-headers (level 1) and rows. Indent = 2 characters per level. ---- */
+typedef enum { RK_HEADER, RK_YAW, RK_PITCH, RK_INVERT, RK_RES, RK_REG, RK_ACTION } rowkind_t;
+typedef struct {
+    uint8_t kind, level;
+    const char *title;                        /* RK_HEADER */
+    const struct roth_setting_v1 *s;          /* RK_REG */
+    uint32_t idx;                             /* RK_REG: registry index; RK_ACTION: kb_actions[] index */
+} row_t;
+#define ROWS_MAX 320
+#define INDENT_PX 12                          /* two characters per level */
+static row_t g_rows[ROWS_MAX];
+static volatile int g_nrows;
+static int g_rows_built;
+#define NUM_ROWS g_nrows
 static volatile int g_capture_row = -1;         /* registry row waiting for a key (ST_CAPTURE) */
 static volatile int g_commit_pending = -1;      /* registry index to setting_commit from on_frame_game */
 #define VISIBLE_ROWS 40
@@ -558,16 +555,16 @@ static void on_load(const struct roth_api_v1 *api)
         struct roth_setting_v1 d;
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
-        d.group = "MENU"; d.key = "toggle_key"; d.label = "MENU KEY"; d.type = ROTH_SETTING_KEY; d.value = &g_toggle_key;
+        d.key = "toggle_key"; d.label = "MENU KEY"; d.type = ROTH_SETTING_KEY; d.value = &g_toggle_key;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
-        d.group = "MENU"; d.key = "text_color"; d.label = "TEXT COLOR"; d.type = ROTH_SETTING_INT; d.value = &g_text_color;
+        d.key = "text_color"; d.label = "TEXT COLOR"; d.type = ROTH_SETTING_INT; d.value = &g_text_color;
         d.imin = 0; d.imax = 255; d.istep = 1;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
-        d.group = "MENU"; d.key = "background"; d.label = "BACKGROUND"; d.type = ROTH_SETTING_ENUM; d.value = &g_bg_style;
+        d.key = "background"; d.label = "BACKGROUND"; d.type = ROTH_SETTING_ENUM; d.value = &g_bg_style;
         d.imin = 0; d.imax = 2; d.istep = 1; d.enum_names = BG_STYLE_NAMES;
         api->register_setting(&d);
     }
@@ -590,12 +587,10 @@ static void on_load(const struct roth_api_v1 *api)
             (unsigned)g_toggle_key, g_mouselook_cfg, g_keybinds_cfg);
 }
 
-/* ---- row navigation: row 3 (the "KEY BINDINGS" label) is never selectable ---- */
+/* ---- row navigation: headers are never selectable ---- */
 static int row_selectable(int row)
 {
-    if (row == ROW_LABEL) return 0;
-    if (IN_REG(row)) return g_regrows[row - REG_BASE].title == NULL;       /* headers are not selectable */
-    return 1;
+    return row >= 0 && row < g_nrows && g_rows[row].kind != RK_HEADER;
 }
 
 static void move_selection(int dir)
@@ -615,7 +610,7 @@ static void move_selection(int dir)
  * the mod-owned value word; setting_commit (persist + on_change) is deferred to on_frame_game. */
 static void reg_adjust(int row, int dir)
 {
-    const regrow_t *rr = &g_regrows[row - REG_BASE];
+    const row_t *rr = &g_rows[row];
     const struct roth_setting_v1 *s = rr->s;
     if (!s) return;
     if (s->type == ROTH_SETTING_FLOAT) {
@@ -633,6 +628,59 @@ static void reg_adjust(int row, int dir)
         *(int32_t *)s->value = v;
     } else return;                                  /* KEY: handled by the capture state */
     g_commit_pending = (int)rr->idx;
+}
+
+/* Hold-to-repeat for the navigation keys (the host forwards only the first make code, not typematic repeats).
+ * Up/Down always repeat; Left/Right only on rows that step a number (an ON/OFF flip or a list cycle would
+ * just flicker). The repeat is driven from on_compose_tick off the 70 Hz engine tick. */
+#define VA_TICK 0x90bccu
+#define REPEAT_DELAY_TICKS 25            /* ~360 ms before the first repeat */
+#define REPEAT_RATE_TICKS  4             /* ~57 ms between repeats */
+static volatile uint8_t g_held;          /* make code being held, 0 = none */
+static uint16_t g_held_next;
+
+static int row_steps_number(int row)
+{
+    if (row < 0 || row >= g_nrows) return 0;
+    const row_t *rr = &g_rows[row];
+    if (rr->kind == RK_YAW || rr->kind == RK_PITCH) return 1;
+    return rr->kind == RK_REG && (rr->s->type == ROTH_SETTING_INT || rr->s->type == ROTH_SETTING_FLOAT);
+}
+static int row_repeatable(uint8_t make)
+{
+    return make == 0x48 || make == 0x50 || row_steps_number(g_sel);
+}
+
+/* One navigation/adjust step for Up/Down/Left/Right on the selected row (also what a repeat does). */
+static void nav_key(uint8_t make)
+{
+    if (make == 0x48) { move_selection(-1); return; }
+    if (make == 0x50) { move_selection(1);  return; }
+    int dir = (make == 0x4d) ? 1 : -1;
+    if (g_sel < 0 || g_sel >= g_nrows) return;
+    const row_t *rr = &g_rows[g_sel];
+    switch (rr->kind) {
+    case RK_YAW:
+        g_disp_yaw += dir * 0.1;
+        if (g_disp_yaw < 0.01) g_disp_yaw = 0.01;
+        if (g_disp_yaw > 20.0) g_disp_yaw = 20.0;
+        g_mouselook_dirty = 1; break;
+    case RK_PITCH:
+        g_disp_pitch += dir * 0.05;
+        if (g_disp_pitch < 0.01) g_disp_pitch = 0.01;
+        if (g_disp_pitch > 5.0) g_disp_pitch = 5.0;
+        g_mouselook_dirty = 1; break;
+    case RK_INVERT: g_disp_invert = !g_disp_invert; g_mouselook_dirty = 1; break;
+    case RK_RES: {
+        int v = g_res_sel + dir;
+        if (v < 0) v = NUM_RES - 1;
+        if (v >= NUM_RES) v = 0;
+        g_res_sel = v;
+        g_res_status[0] = '\0';
+        break; }
+    case RK_REG: reg_adjust(g_sel, dir); break;
+    default: break;
+    }
 }
 
 /* on_scancode (TICK_ISR): fast, game_ram reads only, no engine calls, no file I/O. Every key
@@ -653,17 +701,16 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         return sc; /* normal gameplay: untouched passthrough */
     }
 
-    if (is_break) return 0; /* overlay owns focus: swallow releases too */
+    if (is_break) { if (make == g_held) g_held = 0; return 0; }   /* overlay owns focus: swallow releases too (and stop auto-repeat) */
 
     if (g_state == ST_CAPTURE) {                      /* registry KEY setting waiting for its key */
         if (make == 0x01) {                           /* Esc cancels (so Esc itself cannot be bound) */
             g_state = ST_MAIN;
         } else if (make != 0x60 && make != 0x61) {    /* ignore the 0xE0/0xE1 prefix bytes */
             int r = g_capture_row;
-            if (IN_REG(r) && g_regrows[r - REG_BASE].s &&
-                g_regrows[r - REG_BASE].s->type == ROTH_SETTING_KEY) {
-                *(int32_t *)g_regrows[r - REG_BASE].s->value = make;
-                g_commit_pending = (int)g_regrows[r - REG_BASE].idx;
+            if (r >= 0 && r < g_nrows && g_rows[r].kind == RK_REG && g_rows[r].s->type == ROTH_SETTING_KEY) {
+                *(int32_t *)g_rows[r].s->value = make;
+                g_commit_pending = (int)g_rows[r].idx;
             }
             g_state = ST_MAIN;
         }
@@ -687,47 +734,24 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         g_overlay_open = 0;
         return 0;
     }
-    if (make == 0x48) { move_selection(-1); return 0; }         /* Up */
-    if (make == 0x50) { move_selection(1);  return 0; }         /* Down */
-    if (make == 0x4b || make == 0x4d) {                          /* Left / Right */
-        int dir = (make == 0x4d) ? 1 : -1;
-        if (g_sel == ROW_YAW) {
-            g_disp_yaw += dir * 0.1;
-            if (g_disp_yaw < 0.01) g_disp_yaw = 0.01;
-            if (g_disp_yaw > 20.0) g_disp_yaw = 20.0;
-            g_mouselook_dirty = 1;
-        } else if (g_sel == ROW_PITCH) {
-            g_disp_pitch += dir * 0.05;
-            if (g_disp_pitch < 0.01) g_disp_pitch = 0.01;
-            if (g_disp_pitch > 5.0) g_disp_pitch = 5.0;
-            g_mouselook_dirty = 1;
-        } else if (g_sel == ROW_INVERT) {
-            g_disp_invert = !g_disp_invert;
-            g_mouselook_dirty = 1;
-        } else if (g_sel == ROW_RES) {
-            int v = g_res_sel + dir;
-            if (v < 0) v = NUM_RES - 1;
-            if (v >= NUM_RES) v = 0;
-            g_res_sel = v;
-            g_res_status[0] = '\0';
-        } else if (IN_REG(g_sel)) {
-            reg_adjust(g_sel, dir);
-        }
+    if (make == 0x48 || make == 0x50 || make == 0x4b || make == 0x4d) {   /* Up / Down / Left / Right (auto-repeat while held) */
+        nav_key(make);
+        g_held = (row_repeatable(make)) ? make : 0;
+        g_held_next = (uint16_t)(api->game_ram->u16(VA_TICK) + REPEAT_DELAY_TICKS);
         return 0;
     }
     if (make == 0x1c) { /* Enter */
-        if (g_sel == ROW_INVERT) {
-            g_disp_invert = !g_disp_invert;
-            g_mouselook_dirty = 1;
-        } else if (g_sel == ROW_RES) {
-            g_res_apply = 1;
-        } else if (IN_REG(g_sel)) {
-            const struct roth_setting_v1 *rs = g_regrows[g_sel - REG_BASE].s;
-            if (rs && rs->type == ROTH_SETTING_KEY) { g_capture_row = g_sel; g_state = ST_CAPTURE; }
-            else reg_adjust(g_sel, 1);
-        } else if (g_sel >= ROW_ACTION_BASE && g_sel < NUM_ROWS) {
-            g_rebind_action_idx = g_sel - ROW_ACTION_BASE;
-            g_state = ST_REBIND;
+        if (g_sel >= 0 && g_sel < g_nrows) {
+            const row_t *rr = &g_rows[g_sel];
+            if (rr->kind == RK_INVERT) { g_disp_invert = !g_disp_invert; g_mouselook_dirty = 1; }
+            else if (rr->kind == RK_RES) g_res_apply = 1;
+            else if (rr->kind == RK_REG) {
+                if (rr->s->type == ROTH_SETTING_KEY) { g_capture_row = g_sel; g_state = ST_CAPTURE; }
+                else reg_adjust(g_sel, 1);
+            } else if (rr->kind == RK_ACTION) {
+                g_rebind_action_idx = (int)rr->idx;
+                g_state = ST_REBIND;
+            }
         }
         return 0;
     }
@@ -803,30 +827,84 @@ static void apply_resolution(const struct roth_api_v1 *api)
     }
 }
 
-/* Build the registry section once: an owner header per plugin (+ a sub-header whenever `group` changes), then
- * its settings. Registration order = load order, so one owner's settings are contiguous. */
-static void build_regrows(const struct roth_api_v1 *api)
+/* Key-binding topics: which kb_actions[] names go under which sub-heading. Anything unlisted lands in DEBUG. */
+static const struct { const char *title; const char *names[12]; } KB_TOPICS[] = {
+    { "MOVEMENT",  { "move_forward", "move_backward", "turn_left", "turn_right", "strafe_left", "strafe_right",
+                     "jump", "crouch", "sprint_toggle", NULL } },
+    { "LOOK",      { "look_up", "look_down", "look_recenter_up", "look_recenter_down", NULL } },
+    { "COMBAT",    { "fire", "weapon_1", "weapon_2", "weapon_3", "weapon_4", "weapon_5", "weapon_6", "weapon_overlay", NULL } },
+    { "INVENTORY", { "inventory", "use_enter", "easy_select", "choice_up", "choice_down", NULL } },
+    { "INTERFACE", { "escape_menu", "subtitles", "help_overlay", "mouse_swap", NULL } },
+    { "SAVE AND LOAD", { "quicksave", "quickload", NULL } },
+    { "DISPLAY",   { "display_cycle", "display_cycle_alt", "gamma_up", "gamma_down", "view_scale_0", "view_smaller",
+                     "view_larger", "snapshot", NULL } },
+    { "DEBUG",     { "show_version", "render_mode", "flush_textures", "wireframe_map", "dev_map_menu", "dev_open_door",
+                     "noop_f7", "noop_n", "noop_t", NULL } },
+};
+#define NUM_TOPICS ((int)(sizeof KB_TOPICS / sizeof *KB_TOPICS))
+
+static int topic_of_action(const char *name)
+{
+    for (int t = 0; t < NUM_TOPICS; t++)
+        for (int k = 0; KB_TOPICS[t].names[k]; k++)
+            if (!strcmp(KB_TOPICS[t].names[k], name)) return t;
+    return NUM_TOPICS - 1;                          /* unlisted -> DEBUG */
+}
+
+static void add_row(int *n, int kind, int level, const char *title, const struct roth_setting_v1 *s, uint32_t idx)
+{
+    if (*n >= ROWS_MAX) return;
+    row_t *r = &g_rows[(*n)++];
+    r->kind = (uint8_t)kind; r->level = (uint8_t)level; r->title = title; r->s = s; r->idx = idx;
+}
+
+/* Build the whole menu once: MOUSE (built-ins) | DISPLAY (resolution + every registry setting whose group is
+ * "DISPLAY") | one block per registering mod (its own groups as sub-headings) | KEY BINDINGS by topic. */
+static void build_rows(const struct roth_api_v1 *api)
 {
     int n = 0;
-    const char *last_owner = NULL, *last_group = NULL;
     uint32_t count = api->setting_count();
-    for (uint32_t i = 0; i < count && n + 2 < REGROWS_MAX; i++) {
+    add_row(&n, RK_HEADER, 0, "MOUSE", NULL, 0);
+    add_row(&n, RK_YAW, 1, NULL, NULL, 0);
+    add_row(&n, RK_PITCH, 1, NULL, NULL, 0);
+    add_row(&n, RK_INVERT, 1, NULL, NULL, 0);
+
+    add_row(&n, RK_HEADER, 0, "DISPLAY", NULL, 0);
+    add_row(&n, RK_RES, 1, NULL, NULL, 0);
+    for (uint32_t i = 0; i < count; i++) {
         const struct roth_setting_v1 *s = api->setting_at(i);
-        if (!s) continue;
+        if (s && s->group && !strcmp(s->group, "DISPLAY")) add_row(&n, RK_REG, 1, NULL, s, i);
+    }
+
+    const char *last_owner = NULL, *last_group = NULL;
+    for (uint32_t i = 0; i < count; i++) {
+        const struct roth_setting_v1 *s = api->setting_at(i);
+        if (!s || (s->group && !strcmp(s->group, "DISPLAY"))) continue;
         if (!last_owner || strcmp(last_owner, s->owner_id) != 0) {
-            g_regrows[n].s = NULL; g_regrows[n].idx = 0; g_regrows[n].title = s->owner_name; g_regrows[n].level = 0; n++;
+            add_row(&n, RK_HEADER, 0, s->owner_name, NULL, 0);
             last_owner = s->owner_id; last_group = NULL;
         }
         if (s->group && (!last_group || strcmp(last_group, s->group) != 0)) {
-            g_regrows[n].s = NULL; g_regrows[n].idx = 0; g_regrows[n].title = s->group; g_regrows[n].level = 1; n++;
+            add_row(&n, RK_HEADER, 1, s->group, NULL, 0);
             last_group = s->group;
         } else if (!s->group) {
             last_group = NULL;                          /* an ungrouped setting sits directly under the owner */
         }
-        g_regrows[n].s = s; g_regrows[n].idx = i; g_regrows[n].title = NULL;
-        g_regrows[n].level = last_group ? 2 : 1; n++;
+        add_row(&n, RK_REG, last_group ? 2 : 1, NULL, s, i);
     }
-    g_nregrows = n;                                 /* published last */
+
+    add_row(&n, RK_HEADER, 0, "KEY BINDINGS", NULL, 0);
+    for (int t = 0; t < NUM_TOPICS; t++) {
+        int shown = 0;
+        for (int a = 0; a < NUM_ACTIONS; a++) {
+            if (topic_of_action(kb_actions[a].name) != t) continue;
+            if (!shown) { add_row(&n, RK_HEADER, 1, KB_TOPICS[t].title, NULL, 0); shown = 1; }
+            add_row(&n, RK_ACTION, 2, NULL, NULL, (uint32_t)a);
+        }
+    }
+    g_nrows = n;                                    /* published last */
+    g_sel = 0;
+    while (g_sel < n && !row_selectable(g_sel)) g_sel++;   /* start on the first real row, not a header */
 }
 
 /* on_frame_game (GAME): all file I/O and game_ram reads for display live here, never in
@@ -837,7 +915,7 @@ static void on_frame_game(const struct roth_api_v1 *api)
     static ui_state_t prev_state = ST_CLOSED;
     const struct roth_game_ram_api_v1 *gr = api->game_ram;
 
-    if (!g_regrows_built) { build_regrows(api); g_regrows_built = 1; }
+    if (!g_rows_built) { build_rows(api); g_rows_built = 1; }
     if (g_commit_pending >= 0) {                    /* a registry value changed in the ISR: persist + notify */
         int c = g_commit_pending; g_commit_pending = -1;
         api->setting_commit((uint32_t)c);
@@ -913,7 +991,12 @@ static void draw_arrow(uint8_t *pixels, uint32_t w, uint32_t h, int cx, int y, i
 static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
                             uint32_t width, uint32_t height)
 {
-    (void)api;
+    if (g_held && g_state == ST_MAIN) {                /* hold-to-repeat for the nav keys (see on_scancode) */
+        uint16_t now = api->game_ram->u16(VA_TICK);
+        if ((int16_t)(uint16_t)(now - g_held_next) >= 0) { nav_key(g_held); g_held_next = (uint16_t)(now + REPEAT_RATE_TICKS); }
+    } else if (g_state != ST_MAIN) {
+        g_held = 0;
+    }
     if (!g_overlay_open || !pixels) return;
 
     int bw = (int)(width * 7 / 10), bh = (int)(height * 3 / 4);
@@ -951,71 +1034,74 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
             draw_string(pixels, width, height, bx + 2, y, ">", COL_SEL, 1);
 
         char buf[48];
-        if (row == ROW_YAW) {
-            snprintf(buf, sizeof buf, "YAW SENS");
-            draw_string(pixels, width, height, list_x, y, buf, COL_TEXT, 1);
+        const row_t *rr = &g_rows[row];
+        int lx = list_x + rr->level * INDENT_PX, vx = list_x + 150;
+        switch (rr->kind) {
+        case RK_HEADER: {
+            char tt[40];                                  /* "Name (long description)" -> "Name" */
+            snprintf(tt, sizeof tt, "%.36s", rr->title);
+            char *par = strchr(tt, '('); if (par) { *par = '\0'; while (par > tt && par[-1] == ' ') *--par = '\0'; }
+            snprintf(buf, sizeof buf, "- %.30s -", tt);
+            draw_string(pixels, width, height, lx, y, buf, COL_TEXT, 1);
+            break; }
+        case RK_YAW:
+            draw_string(pixels, width, height, lx, y, "YAW SENS", COL_TEXT, 1);
             snprintf(buf, sizeof buf, "%.2f", g_disp_yaw);
-            draw_string(pixels, width, height, list_x + 110, y, buf, COL_TEXT, 1);
-        } else if (row == ROW_PITCH) {
-            draw_string(pixels, width, height, list_x, y, "PITCH SENS", COL_TEXT, 1);
+            draw_string(pixels, width, height, vx, y, buf, COL_TEXT, 1);
+            break;
+        case RK_PITCH:
+            draw_string(pixels, width, height, lx, y, "PITCH SENS", COL_TEXT, 1);
             snprintf(buf, sizeof buf, "%.2f", g_disp_pitch);
-            draw_string(pixels, width, height, list_x + 110, y, buf, COL_TEXT, 1);
-        } else if (row == ROW_INVERT) {
-            draw_string(pixels, width, height, list_x, y, "INVERT PITCH", COL_TEXT, 1);
-            draw_value_bool(pixels, width, height, list_x + 110, y, g_disp_invert);
-        } else if (row == ROW_RES) {
-            draw_string(pixels, width, height, list_x, y, "RESOLUTION", COL_TEXT, 1);
+            draw_string(pixels, width, height, vx, y, buf, COL_TEXT, 1);
+            break;
+        case RK_INVERT:
+            draw_string(pixels, width, height, lx, y, "INVERT PITCH", COL_TEXT, 1);
+            draw_value_bool(pixels, width, height, vx, y, g_disp_invert);
+            break;
+        case RK_RES: {
+            draw_string(pixels, width, height, lx, y, "RESOLUTION", COL_TEXT, 1);
             int sp = g_res_sel;
             snprintf(buf, sizeof buf, "%s%s", RES_LIST[sp].name, sp == g_res_now ? " NOW" : "");
-            draw_string(pixels, width, height, list_x + 110, y, buf, COL_TEXT, 1);
+            draw_string(pixels, width, height, vx, y, buf, COL_TEXT, 1);
             if (g_res_status[0])
-                draw_string(pixels, width, height, list_x + 110 + 12 * 6, y, g_res_status, COL_TEXT, 1);
+                draw_string(pixels, width, height, vx + 12 * 6, y, g_res_status, COL_TEXT, 1);
             else if (row == g_sel && sp != g_res_now)
-                draw_string(pixels, width, height, list_x + 110 + 12 * 6, y, "ENTER APPLIES", COL_TEXT, 1);
-        } else if (IN_REG(row)) {
-            const regrow_t *rr = &g_regrows[row - REG_BASE];
-            if (rr->title) {
-                char tt[40];                                  /* "Name (long description)" -> "Name" */
-                snprintf(tt, sizeof tt, "%.36s", rr->title);
-                char *par = strchr(tt, '('); if (par) { *par = '\0'; while (par > tt && par[-1] == ' ') *--par = '\0'; }
-                snprintf(buf, sizeof buf, "- %.30s -", tt);
-                draw_string(pixels, width, height, list_x + rr->level * INDENT_PX, y, buf, COL_TEXT, 1);
-            } else {
-                const struct roth_setting_v1 *rs = rr->s;
-                draw_string(pixels, width, height, list_x + rr->level * INDENT_PX, y, rs->label, COL_TEXT, 1);
-                if (rs->type == ROTH_SETTING_BOOL) {
-                    snprintf(buf, sizeof buf, "%s", *(const int32_t *)rs->value ? "ON" : "OFF");
-                } else if (rs->type == ROTH_SETTING_INT) {
-                    snprintf(buf, sizeof buf, "%d", (int)*(const int32_t *)rs->value);
-                } else if (rs->type == ROTH_SETTING_FLOAT) {
-                    snprintf(buf, sizeof buf, "%.2f", (double)*(const float *)rs->value);
-                } else if (rs->type == ROTH_SETTING_ENUM) {
-                    int32_t v = *(const int32_t *)rs->value;
-                    snprintf(buf, sizeof buf, "%s", (v >= 0 && v <= rs->imax && rs->enum_names && rs->enum_names[v])
-                                                    ? rs->enum_names[v] : "?");
-                } else {   /* KEY */
-                    int32_t v = *(const int32_t *)rs->value;
-                    const char *kn = disp_keyname((uint8_t)v);
-                    if (g_state == ST_CAPTURE && g_capture_row == row) snprintf(buf, sizeof buf, "PRESS A KEY");
-                    else if (kn) snprintf(buf, sizeof buf, "%s", kn);
-                    else snprintf(buf, sizeof buf, "0x%02X", (unsigned)v);
-                }
-                draw_string(pixels, width, height, list_x + 150, y, buf, COL_TEXT, 1);
+                draw_string(pixels, width, height, vx + 12 * 6, y, "ENTER APPLIES", COL_TEXT, 1);
+            break; }
+        case RK_REG: {
+            const struct roth_setting_v1 *rs = rr->s;
+            draw_string(pixels, width, height, lx, y, rs->label, COL_TEXT, 1);
+            if (rs->type == ROTH_SETTING_BOOL) {
+                snprintf(buf, sizeof buf, "%s", *(const int32_t *)rs->value ? "ON" : "OFF");
+            } else if (rs->type == ROTH_SETTING_INT) {
+                snprintf(buf, sizeof buf, "%d", (int)*(const int32_t *)rs->value);
+            } else if (rs->type == ROTH_SETTING_FLOAT) {
+                snprintf(buf, sizeof buf, "%.2f", (double)*(const float *)rs->value);
+            } else if (rs->type == ROTH_SETTING_ENUM) {
+                int32_t v = *(const int32_t *)rs->value;
+                snprintf(buf, sizeof buf, "%s", (v >= 0 && v <= rs->imax && rs->enum_names && rs->enum_names[v])
+                                                ? rs->enum_names[v] : "?");
+            } else {   /* KEY */
+                int32_t v = *(const int32_t *)rs->value;
+                const char *kn = disp_keyname((uint8_t)v);
+                if (g_state == ST_CAPTURE && g_capture_row == row) snprintf(buf, sizeof buf, "PRESS A KEY");
+                else if (kn) snprintf(buf, sizeof buf, "%s", kn);
+                else snprintf(buf, sizeof buf, "0x%02X", (unsigned)v);
             }
-        } else if (row == ROW_LABEL) {
-            draw_string(pixels, width, height, list_x, y, "- KEY BINDINGS -", COL_TEXT, 1);
-        } else {
-            int ai = row - ROW_ACTION_BASE;
-            const kb_action_t *act = &kb_actions[ai];
+            draw_string(pixels, width, height, vx, y, buf, COL_TEXT, 1);
+            break; }
+        case RK_ACTION: {
+            int ai = (int)rr->idx;
             char namebuf[24];
-            snprintf(namebuf, sizeof namebuf, "%.20s", act->name);
+            snprintf(namebuf, sizeof namebuf, "%.20s", kb_actions[ai].name);
             for (char *pc = namebuf; *pc; pc++) if (*pc == '_') *pc = ' ';
-            draw_string(pixels, width, height, list_x + INDENT_PX, y, namebuf, COL_TEXT, 1);
-            const char *kn = keyname_of(g_action_sc[ai]);
+            draw_string(pixels, width, height, lx, y, namebuf, COL_TEXT, 1);
+            const char *kn = disp_keyname(g_action_sc[ai]);
             char keybuf[16];
             if (kn) snprintf(keybuf, sizeof keybuf, "%s", kn);
             else    snprintf(keybuf, sizeof keybuf, "0x%02X", g_action_sc[ai]);
-            draw_string(pixels, width, height, list_x + 150, y, keybuf, COL_TEXT, 1);
+            draw_string(pixels, width, height, vx, y, keybuf, COL_TEXT, 1);
+            break; }
         }
     }
 
@@ -1030,7 +1116,7 @@ static const struct roth_plugin_info_v1 SETTINGS = {
     .abi_minor     = ROTH_ABI_MINOR,
     .struct_size   = sizeof(struct roth_plugin_info_v1),
     .id            = "ire.roth.settings",
-    .name          = "Settings overlay (live mouselook + keybind tuning)",
+    .name          = "Menu (settings overlay: live mouselook, keybinds, display)",
     .version       = "0.1.0",
     .sdk_req_major = ROTH_SDK_MAJOR,
     .sdk_req_minor = ROTH_SDK_MINOR,
