@@ -21,9 +21,9 @@ extern "C" {
 
 /* ---- versions ------------------------------------------------------------ */
 #define ROTH_SDK_MAJOR 0
-#define ROTH_SDK_MINOR 5
+#define ROTH_SDK_MINOR 6
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 5
+#define ROTH_ABI_MINOR 6
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
@@ -1252,6 +1252,7 @@ struct roth_api_v1 {
     const struct roth_engine_api_v1  *engine;
     const struct roth_game_ram_api_v1 *game_ram;
     const char *(ROTH_CDECL *plugin_dir)(void);  /* directory of the currently-dispatching plugin (valid during MAIN lifecycle callbacks; "" otherwise) */
+    void (ROTH_CDECL *set_display_filter)(uint32_t);  /* set the in-process SDL presenter's final upscale filter: 0 = nearest (crisp, default), nonzero = linear (softer). Safe from GAME context; takes effect on the next presented frame. No-op if no SDL presenter is attached (e.g. a pure --headless run). */
 };
 
 /* ---- context-tagged lifecycle callbacks ---------------------------------- */

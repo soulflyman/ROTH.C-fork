@@ -3,6 +3,8 @@
  *
  *   roth-inject              -> print frame counter + non-black pixel count
  *   roth-inject key <hex>... -> push set-1 scancodes (make), then break codes
+ *   roth-inject filter <0|1> -> set g_shm->filter_mode (0=nearest, 1=linear),
+ *                               exactly what roth_api_v1->set_display_filter() does
  */
 #include "../shared_fb.h"
 
@@ -53,14 +55,20 @@ int main(int argc, char **argv)
         printf("btn=%s\n", argv[2]);
         return 0;
     }
+    /* display filter: roth-inject filter <0|1> */
+    if (argc == 3 && !strcmp(argv[1], "filter")) {
+        s->filter_mode = (uint32_t)strtol(argv[2], NULL, 0);
+        printf("filter_mode=%u\n", s->filter_mode);
+        return 0;
+    }
 
     int nz = 0;
     for (int i = 0; i < ROTH_FB_W * ROTH_FB_H; i++)
         if (s->pixels[i])
             nz++;
     printf("frame=%u host_alive=%u viewer_alive=%u nonblack=%d/%d "
-           "probe[mid=%u special=%u worldblend=%u]\n",
+           "probe[mid=%u special=%u worldblend=%u] filter_mode=%u cur_w=%u cur_h=%u\n",
            s->frame, s->host_alive, s->viewer_alive, nz, ROTH_FB_W * ROTH_FB_H,
-           s->probe[0], s->probe[1], s->probe[2]);
+           s->probe[0], s->probe[1], s->probe[2], s->filter_mode, s->cur_w, s->cur_h);
     return 0;
 }

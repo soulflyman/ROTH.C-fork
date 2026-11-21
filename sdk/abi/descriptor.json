@@ -2,14 +2,14 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 5,
+ "sdk_minor": 6,
  "abi_major": 0,
- "abi_minor": 5,
+ "abi_minor": 6,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
   "roth_api_v1": {
-   "size": 20,
+   "size": 24,
    "fields": [
     {
      "name": "abi_major",
@@ -46,6 +46,12 @@
     {
      "name": "plugin_dir",
      "offset": 16,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "set_display_filter",
+     "offset": 20,
      "size": 4,
      "kind": "fnptr"
     }

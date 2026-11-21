@@ -24,6 +24,7 @@
 #include "engine.h"             /* regs_t, g_os_soft_int (the int33 seam we chain for on_frame_game) */
 #include "standalone_hooks.h"   /* host_soft_int (the real body g_os_soft_int points at) */
 #include "sys/sys.h"            /* per-OS seam: shared-object loading, directory enumeration, soname */
+#include "shared_fb.h"          /* struct roth_shm (g_shm) — needed to implement set_display_filter */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -62,6 +63,13 @@ static int       g_npl;
  * host_adapters.c's roth_host_api_v1.plugin_dir points at roth_sdk_current_plugin_dir below. */
 static const char *g_cur_dispatch_dir;
 const char *roth_sdk_current_plugin_dir(void) { return g_cur_dispatch_dir ? g_cur_dispatch_dir : ""; }
+
+/* roth_api_v1->set_display_filter (SDK 0.6): live-set the in-process SDL presenter's upscale
+ * filter. g_shm is the host<->SDL-presenter channel (shared_fb.h); sdl_host.c's present loop
+ * re-reads filter_mode every frame, so this is just a plain word write — no lock needed, same
+ * convention as the existing cross-thread aspect_w/h and mouse_dx/dy fields. NULL g_shm (pure
+ * --headless, no presenter attached) makes this a no-op. */
+void roth_sdk_set_display_filter(uint32_t linear) { if (g_shm) g_shm->filter_mode = linear ? 1u : 0u; }
 
 static int      g_opt_no_mods, g_opt_strict, g_opt_list, g_opt_dump;
 static int      g_discovered;                  /* discovery ran (guards a double discover) */

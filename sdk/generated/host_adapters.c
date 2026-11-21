@@ -105,6 +105,7 @@ static const struct roth_engine_api_v1 ENG = {
 /* host services on the top-level table: provided by the host loader (extern here — the
  * standalone -c ABI proof leaves them unresolved; the standalone game link binds plugin_loader.o). */
 extern const char *roth_sdk_current_plugin_dir(void);
+extern void roth_sdk_set_display_filter(uint32_t);
 
 ROTH_SDK_EXPORT const struct roth_api_v1 roth_host_api_v1 = {
     .abi_major = ROTH_ABI_MAJOR,
@@ -113,4 +114,5 @@ ROTH_SDK_EXPORT const struct roth_api_v1 roth_host_api_v1 = {
     .engine = &ENG,
     .game_ram = &GR,
     .plugin_dir = roth_sdk_current_plugin_dir,
+    .set_display_filter = roth_sdk_set_display_filter,
 };

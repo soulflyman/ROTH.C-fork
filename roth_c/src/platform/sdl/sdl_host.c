@@ -143,7 +143,8 @@ int sdl_video_preflight(void)
 
 int sdl_present_run(int scale, int filter)
 {
-    const SDL_ScaleMode scale_mode = filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
+    int cur_filter = filter;   /* live-reread each frame from g_shm->filter_mode (a plugin may change it) */
+    SDL_ScaleMode scale_mode = cur_filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
 
     if (!g_shm) {
         fprintf(stderr, "[sdl] no shared framebuffer — cannot present\n");
@@ -300,7 +301,15 @@ int sdl_present_run(int scale, int filter)
         if (aw <= 0 || aw > ROTH_FB_MAXW || ah <= 0 || ah > ROTH_FB_MAXH) {
             aw = w; ah = h; /* fallback: square pixels */
         }
-        if (w != cur_tex_w || h != cur_tex_h) {
+        /* a plugin may flip g_shm->filter_mode live (roth_api_v1->set_display_filter). SDL's API lets
+         * the scale mode change on an existing texture, but the software/dummy renderer backend used
+         * by this test harness was empirically observed to keep blitting with the OLD mode afterward
+         * (likely an internal blit-map cache keyed off the texture, not re-derived per draw call) — so
+         * force a full recreate on a filter change too, the same way a resolution change already does. */
+        int want_filter = (g_shm->filter_mode != 0);
+        if (w != cur_tex_w || h != cur_tex_h || want_filter != cur_filter) {
+            cur_filter = want_filter;
+            scale_mode = cur_filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
             SDL_DestroyTexture(tex);
             tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
                                     SDL_TEXTUREACCESS_STREAMING, w, h);

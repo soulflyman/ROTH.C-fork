@@ -56,6 +56,12 @@ struct roth_shm {
      * at their logical aspect (320x200) so they fill a 4:3-ish screen as the
      * original CRT did, not as a tall/narrow portrait. 0 => use cur_w:cur_h. */
     volatile uint32_t aspect_w, aspect_h;
+
+    /* Final upscale filter for the in-process SDL presenter: 0 = nearest (crisp,
+     * default), nonzero = linear (softer). Seeded from --filter/ROTH_FILTER at
+     * boot; sdl_host.c re-reads it every frame so a plugin can change it live via
+     * roth_api_v1->set_display_filter() (sdk/include/roth_sdk.h). */
+    volatile uint32_t filter_mode;
 };
 
 #endif

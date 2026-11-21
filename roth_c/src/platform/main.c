@@ -615,6 +615,7 @@ int main(int argc, char **argv)
     /* Present + input loop on the main thread (SDL3). Returns when the window closes or the game
      * thread exits (host_alive -> 0). On window close it sets g_shm->quit, which the game thread's
      * shm_tick honors with _exit(0). */
+    if (g_shm) g_shm->filter_mode = (uint32_t)g_sdl_filter;   /* seed; a plugin may change it live afterward */
     sdl_present_run(g_sdl_scale, g_sdl_filter);
 
     if (g_shm)
