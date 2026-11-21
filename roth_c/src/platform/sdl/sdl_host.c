@@ -396,6 +396,9 @@ int sdl_present_run(int scale, int filter)
             int vx0 = (int)g_shm->view_x, vy0 = (int)g_shm->view_y;
             int vx1 = vx0 + (int)g_shm->view_w, vy1 = vy0 + (int)g_shm->view_h;
             if (aa_force_all) { vx0 = 0; vy0 = 0; vx1 = w; vy1 = h; }
+            /* The engine draws subtitles / inspect text into the bottom of the 3D view; smoothing the thin high-contrast
+             * glyphs smears them. Leave the bottom tenth of the view alone (costs a little edge smoothing on the floor). */
+            vy1 -= (vy1 - vy0) / 10;
             if (vx1 > vx0 && vy1 > vy0) {
                 uint32_t pal32[256];
                 for (int i = 0; i < 256; i++) {
