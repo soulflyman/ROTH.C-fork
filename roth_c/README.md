@@ -94,11 +94,24 @@ Common switches:
 | _(none)_            | windowed, mods loaded from `<game dir>/mods/`                                                           |
 | `--scale N`         | initial window scale (default: auto-fit)                                                                |
 | `--sf2 FILE`        | use a specific SoundFont (otherwise: `ROTH_SF2` env, `gm.sf2` beside the binary, or a system soundfont) |
+| `--filter linear`   | smooth (bilinear) upscaling instead of crisp nearest-neighbour (`ROTH_FILTER=linear`)                   |
+| `--aa`              | edge anti-aliasing of the 3D view (`ROTH_AA=1`; also a row in the F11 settings menu) - see the note below |
 | `--no-mods`         | start with the mod platform inert (`ROTH_MODS=0` does the same)                                         |
 | `--list-mods`       | resolve and print the installed mods, then exit                                                         |
 | `--strict-mods`     | make mod-validation warnings fatal                                                                      |
 | `--dump-mod-chains` | print the resolved function-override chains at boot                                                     |
 | `--headless`        | no window; publishes the framebuffer to shared memory for the dev viewer                                |
+
+### Edge anti-aliasing (`--aa`) - known limitation
+
+The renderer is an 8-bit palette rasterizer, so true MSAA/SSAA is not possible. `--aa` is an FXAA-style
+post-process on the presented image, limited to the 3D view during gameplay (HUD, menus, cutscenes and mod
+overlays stay untouched). **Known issue: it also softens textures** - any high-contrast texel pattern looks
+like an edge to a luma-based filter, so walls and objects look blurrier than without it. It is off by default and
+deliberately kept in for people who prefer smooth edges over sharp textures. `ROTH_AA_EDGE=N` raises/lowers the
+minimum contrast treated as an edge (default 24; higher = fewer pixels touched = less texture softening, but
+also less edge smoothing). A smarter variant (e.g. only smoothing silhouette edges, not texture detail) is a
+possible future improvement.
 
 ## The dev viewer (optional)
 
