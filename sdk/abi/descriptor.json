@@ -9,7 +9,7 @@
  "ptr_size": 4,
  "structs": {
   "roth_api_v1": {
-   "size": 24,
+   "size": 28,
    "fields": [
     {
      "name": "abi_major",
@@ -52,6 +52,12 @@
     {
      "name": "set_display_filter",
      "offset": 20,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "get_display_filter",
+     "offset": 24,
      "size": 4,
      "kind": "fnptr"
     }

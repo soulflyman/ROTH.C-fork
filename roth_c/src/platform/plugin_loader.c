@@ -71,6 +71,11 @@ const char *roth_sdk_current_plugin_dir(void) { return g_cur_dispatch_dir ? g_cu
  * --headless, no presenter attached) makes this a no-op. */
 void roth_sdk_set_display_filter(uint32_t linear) { if (g_shm) g_shm->filter_mode = linear ? 1u : 0u; }
 
+/* roth_api_v1->get_display_filter (SDK 0.6): read back the live value, so a plugin can reflect
+ * the TRUE current state (e.g. seeded from --filter/ROTH_FILTER at boot) on first open instead
+ * of assuming nearest. */
+uint32_t roth_sdk_get_display_filter(void) { return g_shm ? g_shm->filter_mode : 0u; }
+
 static int      g_opt_no_mods, g_opt_strict, g_opt_list, g_opt_dump;
 static int      g_discovered;                  /* discovery ran (guards a double discover) */
 static int      g_frame_seam_installed;

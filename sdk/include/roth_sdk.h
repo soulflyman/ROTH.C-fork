@@ -1253,6 +1253,7 @@ struct roth_api_v1 {
     const struct roth_game_ram_api_v1 *game_ram;
     const char *(ROTH_CDECL *plugin_dir)(void);  /* directory of the currently-dispatching plugin (valid during MAIN lifecycle callbacks; "" otherwise) */
     void (ROTH_CDECL *set_display_filter)(uint32_t);  /* set the in-process SDL presenter's final upscale filter: 0 = nearest (crisp, default), nonzero = linear (softer). Safe from GAME context; takes effect on the next presented frame. No-op if no SDL presenter is attached (e.g. a pure --headless run). */
+    uint32_t (ROTH_CDECL *get_display_filter)(void);  /* read back the current upscale filter (0 = nearest, nonzero = linear) — lets a plugin reflect the true live state (e.g. seeded from --filter/ROTH_FILTER at boot) instead of assuming a default. Returns 0 if no SDL presenter is attached. */
 };
 
 /* ---- context-tagged lifecycle callbacks ---------------------------------- */
