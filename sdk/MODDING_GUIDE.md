@@ -178,6 +178,28 @@ patterns; replace them only if you understand that machinery.
 | `TICK_ISR` | the timer tick (`on_scancode`, `on_compose_tick`, overrides reached from the tick) | game_ram + pixels; **no engine calls**, be fast |
 | `AUDIO` | reserved (`on_audio` is never dispatched in v1) | — |
 
+## Settings registry (SDK 0.8)
+
+A plugin can add entries to the in-game settings overlay (the `_settings` mod, F11) without any UI code:
+call `api->register_setting(&desc)` from `on_load` (**MAIN only** — it returns -1 anywhere else) with a
+`struct roth_setting_v1`: a `key` (unique within your plugin), a `label`, a `type`
+(`ROTH_SETTING_BOOL / INT / ENUM / KEY / FLOAT`), and `value` — a pointer to **your own** `int32_t`
+(or `float` for FLOAT) that lives for the whole process. INT/ENUM use `imin/imax/istep` (ENUM also
+`enum_names`, `imax+1` static strings), FLOAT uses `fmin/fmax/fstep`, KEY stores a PC set-1 make
+scancode (the overlay captures the next key press). All strings must be static — the host copies the
+struct, not what it points at. `on_change` is optional and runs in GAME context after the overlay commits.
+
+The host remembers the values for you: it applies the saved value into `*value` while you register
+(so read it any time after `on_load`) and persists changes to `<game>/mods/_settings.cfg`
+(`<plugin id>.<key> = value`). Your plugin needs no cfg code.
+
+Thread rule: the value is a plain aligned 32-bit word. The overlay writes it (from the tick or the
+game thread); you may read it from any context. There is no ordering guarantee *between* different
+settings, so don't assume two related values change together. The overlay is the only consumer in this
+repo, but `setting_count()` / `setting_at(i)` / `setting_commit(i)` are public if you build another UI.
+See `examples/inventory_page` (registers its toggle key, text colour and background style) and
+`examples/settings_overlay` (the consumer; also registers its own menu key).
+
 ## Building
 
 Copy an example's `Makefile` — the whole recipe is:

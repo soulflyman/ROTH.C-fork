@@ -131,9 +131,13 @@ static void draw_text(uint8_t *px, uint32_t w, uint32_t h, int x, int y, const c
         draw_glyph(px, w, h, x + i * (GLYPH_W + 1) * s, y, t[i], c, s);
 }
 
-#define COL_BG     0x00u   /* provisional palette indices — same as the settings overlay */
-#define COL_BORDER 0xe8u
-#define COL_TEXT   0xe8u
+/* Live-editable through the settings registry (SDK 0.8): rows appear in the F11 settings overlay. */
+static int32_t g_text_color = 0xe8;   /* palette index */
+static int32_t g_bg_style   = 0;      /* 0 solid, 1 see-through (checkerboard), 2 none */
+static const char *const BG_STYLE_NAMES[3] = { "SOLID", "SEE-THROUGH", "NONE" };
+#define COL_BG     0x00u
+#define COL_BORDER ((uint8_t)g_text_color)
+#define COL_TEXT   ((uint8_t)g_text_color)
 
 /* ---- game_ram layout ---- */
 #define VA_INV_COUNT        0x80c2cu
@@ -226,7 +230,7 @@ static volatile int g_page;
 static volatile int g_equip_request;        /* slot index + 1, 0 = none */
 static volatile int g_rows_per_col = 20, g_cols = 1, g_page_cap = 20;   /* published by compose */
 static volatile int g_nav;                  /* pending navigation from the ISR: set, consumed in frame */
-static uint8_t g_toggle_sc = 0x58;          /* F12 */
+static int32_t g_toggle_key = 0x58;         /* F12 — a registered KEY setting */
 static int g_scale = 1;
 static char g_status[40];
 
@@ -291,7 +295,7 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     uint8_t make = (uint8_t)(sc & 0x7f);
     int is_break = (sc & 0x80) != 0;
     if (g_state == ST_CLOSED) {
-        if (!is_break && make == g_toggle_sc && api->game_ram->u8(VA_PLAYER_MOVEMENT_ENABLED) == 1) {
+        if (!is_break && make == (uint8_t)g_toggle_key && api->game_ram->u8(VA_PLAYER_MOVEMENT_ENABLED) == 1) {
             g_state = ST_OPEN; return 0;
         }
         return sc;
@@ -299,7 +303,7 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     if (is_break) return 0;
     const list_t *l = &g_list[g_list_front];
     int cap = g_page_cap > 0 ? g_page_cap : 1, rows = g_rows_per_col > 0 ? g_rows_per_col : 1;
-    if (make == g_toggle_sc || make == 0x01) { g_state = ST_CLOSED; return 0; }
+    if (make == (uint8_t)g_toggle_key || make == 0x01) { g_state = ST_CLOSED; return 0; }
     if (make == 0x48) g_sel = step_item(l, g_sel, -1);
     else if (make == 0x50) g_sel = step_item(l, g_sel, 1);
     else if (make == 0x4b) { int t = g_sel - rows; if (t >= 0) g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
@@ -356,7 +360,13 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t
 
     int bw = (int)(w * 9 / 10), bh = (int)(h * 9 / 10);
     int bx = ((int)w - bw) / 2, by = ((int)h - bh) / 2;
-    fill_rect(px, w, h, bx, by, bw, bh, COL_BG);
+    if (g_bg_style == 0) {
+        fill_rect(px, w, h, bx, by, bw, bh, COL_BG);
+    } else if (g_bg_style == 1) {                   /* see-through: every second pixel only */
+        for (int yy = by; yy < by + bh; yy++)
+            for (int xx = bx + ((yy ^ bx) & 1); xx < bx + bw; xx += 2)
+                if (yy >= 0 && (uint32_t)yy < h && xx >= 0 && (uint32_t)xx < w) px[(uint32_t)yy * w + (uint32_t)xx] = COL_BG;
+    }
     fill_rect(px, w, h, bx, by, bw, 2, COL_BORDER);
     fill_rect(px, w, h, bx, by + bh - 2, bw, 2, COL_BORDER);
     fill_rect(px, w, h, bx, by, 2, bh, COL_BORDER);
@@ -403,8 +413,25 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t
 
 static void on_load(const struct roth_api_v1 *api)
 {
-    if (getenv("ROTH_INVENTORY_TOGGLE_KEY"))
-        g_toggle_sc = (uint8_t)strtoul(getenv("ROTH_INVENTORY_TOGGLE_KEY"), NULL, 0);
+    if (getenv("ROTH_INVENTORY_TOGGLE_KEY"))        /* seeds the default; a saved registry value still wins */
+        g_toggle_key = (int32_t)(strtoul(getenv("ROTH_INVENTORY_TOGGLE_KEY"), NULL, 0) & 0x7f);
+    {
+        struct roth_setting_v1 d;
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "toggle_key"; d.label = "INVENTORY KEY"; d.type = ROTH_SETTING_KEY; d.value = &g_toggle_key;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "text_color"; d.label = "TEXT COLOR"; d.type = ROTH_SETTING_INT; d.value = &g_text_color;
+        d.imin = 0; d.imax = 255; d.istep = 1;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "background"; d.label = "BACKGROUND"; d.type = ROTH_SETTING_ENUM; d.value = &g_bg_style;
+        d.imin = 0; d.imax = 2; d.istep = 1; d.enum_names = BG_STYLE_NAMES;
+        api->register_setting(&d);
+    }
     if (getenv("ROTH_INVENTORY_SCALE")) {
         g_scale = atoi(getenv("ROTH_INVENTORY_SCALE"));
         if (g_scale < 1) g_scale = 1;
@@ -424,7 +451,7 @@ static void on_load(const struct roth_api_v1 *api)
     g_demo = getenv("ROTH_INVENTORY_DEMO") != NULL;
     if (getenv("ROTH_INVENTORY_FORCE_OPEN")) g_state = ST_OPEN;
     fprintf(stderr, "[mods:_inventory] on_load: toggle_sc=0x%02x scale=%d items_loaded=%d game_dir=%s\n",
-            g_toggle_sc, g_scale, g_items_loaded, env ? env : dir);
+            (unsigned)g_toggle_key, g_scale, g_items_loaded, env ? env : dir);
 }
 
 static const struct roth_plugin_info_v1 INVPAGE = {
