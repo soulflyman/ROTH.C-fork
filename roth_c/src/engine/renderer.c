@@ -12087,8 +12087,20 @@ void setup_render_projection_scale(void)
     uint32_t edx = (uint32_t)(uint16_t)G16(VA_g_view_h) << 16;
     uint32_t e, f;
     if (eax >= edx) {                                                         /* jb branch2 -> else here */
-        e = (uint16_t)G16(VA_g_view_w);
-        e = ((uint32_t)((int32_t)e * 0x7c)) >> 8;
+        /* hor-plus (display-pipeline-overhaul): the original formula used the LIVE view_w here,
+         * which — since every square-pixel mode this engine ever shipped (400x300/512x384/640x480)
+         * is exactly 4:3 — was indistinguishable from "derive scale from height". That assumption
+         * breaks for a genuinely wide mode (854x480, ~16:9): using view_w directly would keep
+         * center/scale's RATIO constant as width grows (center=view_w/2 grows right alongside
+         * scale=view_w*k), which cancels out — same angular FOV, just denser pixels, not "more
+         * world visible". Deriving the reference width from height (height*4/3, this engine's
+         * only historical aspect family in this branch) instead pins the vertical FOV: it's
+         * BYTE-IDENTICAL to view_w for every existing mode (300*4/3=400, 384*4/3=512, 480*4/3=640
+         * — all exact), and only diverges for a wider view_w, where center still grows with the
+         * real width but scale doesn't — widening the visible horizontal angle instead of just
+         * re-sampling the same one. */
+        uint32_t ref_w = (uint32_t)(uint16_t)G16(VA_g_view_h) * 4u / 3u;
+        e = ((uint32_t)((int32_t)ref_w * 0x7c)) >> 8;
     } else {
         uint32_t q = 0xa00000u / (uint32_t)G32(VA_g_screen_height + 0x4);                      /* unsigned div */
         e = (uint16_t)G16(VA_g_view_h);
