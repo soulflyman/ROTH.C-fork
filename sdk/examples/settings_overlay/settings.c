@@ -858,7 +858,7 @@ static void add_row(int *n, int kind, int level, const char *title, const struct
     r->kind = (uint8_t)kind; r->level = (uint8_t)level; r->title = title; r->s = s; r->idx = idx;
 }
 
-/* Build the whole menu once: MOUSE (built-ins) | DISPLAY (resolution + every registry setting whose group is
+/* Build the whole menu once: MOUSE (built-ins + group "MOUSE" settings) | DISPLAY (resolution + every registry setting whose group is
  * "DISPLAY") | one block per registering mod (its own groups as sub-headings) | KEY BINDINGS by topic. */
 static void build_rows(const struct roth_api_v1 *api)
 {
@@ -868,6 +868,10 @@ static void build_rows(const struct roth_api_v1 *api)
     add_row(&n, RK_YAW, 1, NULL, NULL, 0);
     add_row(&n, RK_PITCH, 1, NULL, NULL, 0);
     add_row(&n, RK_INVERT, 1, NULL, NULL, 0);
+    for (uint32_t i = 0; i < count; i++) {                          /* registry settings with group "MOUSE" */
+        const struct roth_setting_v1 *s = api->setting_at(i);
+        if (s && s->group && !strcmp(s->group, "MOUSE")) add_row(&n, RK_REG, 1, NULL, s, i);
+    }
 
     add_row(&n, RK_HEADER, 0, "DISPLAY", NULL, 0);
     add_row(&n, RK_RES, 1, NULL, NULL, 0);
@@ -879,7 +883,7 @@ static void build_rows(const struct roth_api_v1 *api)
     const char *last_owner = NULL, *last_group = NULL;
     for (uint32_t i = 0; i < count; i++) {
         const struct roth_setting_v1 *s = api->setting_at(i);
-        if (!s || (s->group && !strcmp(s->group, "DISPLAY"))) continue;
+        if (!s || (s->group && (!strcmp(s->group, "DISPLAY") || !strcmp(s->group, "MOUSE")))) continue;   /* shown in the built-in sections */
         if (!last_owner || strcmp(last_owner, s->owner_id) != 0) {
             add_row(&n, RK_HEADER, 0, s->owner_name, NULL, 0);
             last_owner = s->owner_id; last_group = NULL;
