@@ -988,6 +988,23 @@ static void vd_show_res_msg(uint32_t fmt_canon, uint16_t width, uint16_t height)
     show_timed_message(buf);
 }
 
+/* A real DOS mouse driver recenters its pointer when the video mode changes; this port has no driver,
+ * so the engine's software-cursor accumulators (mouse_x/y + the scaled accumulators poll_mouse_motion
+ * clamps, see input.c) kept their OLD-resolution values: after a big->small mode switch the pointer
+ * sat outside the new screen and was clamped to an edge/corner on the next move. Re-base them to the
+ * new screen centre (same relation blit_scaled_sprite_at_mouse uses: acc = pos*scale - hotspot*scale).
+ * No-op until the software cursor is configured (scale/hotspot still 0 during the boot-time mode set). */
+static void vd_recenter_cursor(void)
+{
+    int32_t scale = (int32_t)(int16_t)G16(VA_g_pixel_extent_scale);
+    if (scale <= 0) return;
+    int32_t cx = (int32_t)G32(VA_g_screen_pitch) / 2, cy = (int32_t)G32(VA_g_screen_pitch + 0x4) / 2;
+    G32(VA_g_mouse_x) = cx;
+    G32(VA_g_mouse_y) = cy;
+    G32(VA_g_cursor_prev_y + 0x802c) = cx * scale - G32(VA_g_cursor_prev_y + 0x8024);
+    G32(VA_g_cursor_prev_y + 0x8030) = cy * scale - G32(VA_g_cursor_prev_y + 0x8028);
+}
+
 /* cycle_screen_resolution 0x1480c (733B): THE mode-set orchestrator. Reads the resolution index
  * [0x7f358], resets the page/mode globals (unmapping any DPMI phys-map at [0x146d8]), then dispatches:
  * special indices 0x64/0x65/0x66 -> the VGA fallbacks (320x200 / 320x400 / mode 0x13 via int 0x10);
@@ -1060,6 +1077,7 @@ void cycle_screen_resolution(void)
     configure_render_viewport();
     upload_palette_dac();
     compute_screen_extents_7e8b0();
+    vd_recenter_cursor();
     return;
 
   vga320x200:                                           /* 0x14991 */
