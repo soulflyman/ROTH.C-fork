@@ -141,10 +141,63 @@ int sdl_video_preflight(void)
     return 1;
 }
 
+/* ---- edge anti-aliasing (filter bit 1) ------------------------------------------------------------
+ * The renderer is an 8-bit palette rasterizer with no depth/coverage information, so true MSAA/SSAA is not
+ * possible here (supersampling would also need >480 scanlines and the 320x200-based UI would shrink with it).
+ * This is a post-process on the presented image instead — an FXAA-style edge smoother: find high-contrast
+ * edges by luma, work out whether the edge is horizontal or vertical, and blend the pixel toward its neighbour
+ * across the edge. It only touches the 3D view rectangle (g_shm->view_*, gameplay only) and skips the bounding
+ * box plugins drew in (g_shm->ovl_*), so HUD, cutscenes, menus and mod overlays stay crisp. Reads palette
+ * indices + a per-frame palette table, writes the ARGB frame in place. */
+static void aa_pass(uint32_t *rgb, const uint8_t *pix, const uint32_t *pal, int w, int h,
+                    int vx0, int vy0, int vx1, int vy1, int ox0, int oy0, int ox1, int oy1, int edge_min)
+{
+    uint8_t lum[256];
+    for (int i = 0; i < 256; i++) {
+        uint32_t c = pal[i];
+        lum[i] = (uint8_t)((((c >> 16) & 0xff) * 77 + ((c >> 8) & 0xff) * 150 + (c & 0xff) * 29) >> 8);
+    }
+    if (vx0 < 1) vx0 = 1;
+    if (vy0 < 1) vy0 = 1;
+    if (vx1 > w - 1) vx1 = w - 1;
+    if (vy1 > h - 1) vy1 = h - 1;
+    int has_ovl = ox1 > ox0 && oy1 > oy0;
+    for (int y = vy0; y < vy1; y++) {
+        const uint8_t *r0 = pix + (size_t)(y - 1) * w, *r1 = pix + (size_t)y * w, *r2 = pix + (size_t)(y + 1) * w;
+        for (int x = vx0; x < vx1; x++) {
+            if (has_ovl && x >= ox0 - 1 && x <= ox1 && y >= oy0 - 1 && y <= oy1) continue;
+            int m = lum[r1[x]], n = lum[r0[x]], s_ = lum[r2[x]], e = lum[r1[x + 1]], wv = lum[r1[x - 1]];
+            int mn = m, mx = m;
+            const int nb4[4] = { n, s_, e, wv };
+            for (int k = 0; k < 4; k++) {
+                if (nb4[k] < mn) mn = nb4[k];
+                if (nb4[k] > mx) mx = nb4[k];
+            }
+            int range = mx - mn;
+            if (range < edge_min || range < (mx >> 3)) continue;          /* flat region / weak edge */
+            int nw = lum[r0[x - 1]], ne = lum[r0[x + 1]], sw = lum[r2[x - 1]], se = lum[r2[x + 1]];
+            int gv = (nw + n + ne) - (sw + s_ + se); if (gv < 0) gv = -gv;   /* vertical contrast  */
+            int gh = (nw + wv + sw) - (ne + e + se); if (gh < 0) gh = -gh;   /* horizontal contrast */
+            int a_ = (gv >= gh) ? n : wv, b_ = (gv >= gh) ? s_ : e;          /* the two neighbours across the edge */
+            int da = a_ > m ? a_ - m : m - a_, db = b_ > m ? b_ - m : m - b_;
+            uint8_t nb = (gv >= gh) ? ((da >= db) ? r0[x] : r2[x]) : ((da >= db) ? r1[x - 1] : r1[x + 1]);
+            int f = range >= 96 ? 2 : 1;                                   /* neighbour weight in quarters */
+            uint32_t a = pal[r1[x]], b = pal[nb];
+            uint32_t o = 0xff000000u;
+            for (int sh = 0; sh < 24; sh += 8)
+                o |= ((((a >> sh) & 0xff) * (uint32_t)(4 - f) + ((b >> sh) & 0xff) * (uint32_t)f) >> 2) << sh;
+            rgb[(size_t)y * w + x] = o;
+        }
+    }
+}
+
 int sdl_present_run(int scale, int filter)
 {
-    int cur_filter = filter;   /* live-reread each frame from g_shm->filter_mode (a plugin may change it) */
+    int cur_filter = filter & 1;   /* bit 0 = linear scaling; re-read each frame from g_shm->filter_mode (plugins may change it) */
     SDL_ScaleMode scale_mode = cur_filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
+    int edge_min = 24;                                  /* ROTH_AA_EDGE: minimum luma contrast treated as an edge */
+    if (getenv("ROTH_AA_EDGE")) edge_min = atoi(getenv("ROTH_AA_EDGE"));
+    const int aa_force_all = getenv("ROTH_AA_FORCE_RECT") != NULL;   /* dev/test: treat the whole frame as the 3D view */
 
     if (!g_shm) {
         fprintf(stderr, "[sdl] no shared framebuffer — cannot present\n");
@@ -306,7 +359,8 @@ int sdl_present_run(int scale, int filter)
          * by this test harness was empirically observed to keep blitting with the OLD mode afterward
          * (likely an internal blit-map cache keyed off the texture, not re-derived per draw call) — so
          * force a full recreate on a filter change too, the same way a resolution change already does. */
-        int want_filter = (g_shm->filter_mode != 0);
+        uint32_t fm = g_shm->filter_mode;
+        int want_filter = (fm & 1u) != 0;
         if (w != cur_tex_w || h != cur_tex_h || want_filter != cur_filter) {
             cur_filter = want_filter;
             scale_mode = cur_filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
@@ -336,6 +390,22 @@ int sdl_present_run(int scale, int filter)
             }
             f1 = rd_frame();
         } while (f1 != f0 && ++tries < 2);
+
+        if (fm & 2u) {                                  /* edge AA (filter bit 1) — see aa_pass() */
+            int vx0 = (int)g_shm->view_x, vy0 = (int)g_shm->view_y;
+            int vx1 = vx0 + (int)g_shm->view_w, vy1 = vy0 + (int)g_shm->view_h;
+            if (aa_force_all) { vx0 = 0; vy0 = 0; vx1 = w; vy1 = h; }
+            if (vx1 > vx0 && vy1 > vy0) {
+                uint32_t pal32[256];
+                for (int i = 0; i < 256; i++) {
+                    uint8_t r = g_shm->palette[i * 3 + 0] << 2, g = g_shm->palette[i * 3 + 1] << 2,
+                            b = g_shm->palette[i * 3 + 2] << 2;
+                    pal32[i] = 0xff000000u | ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+                }
+                aa_pass(rgb, (const uint8_t *)g_shm->pixels, pal32, w, h, vx0, vy0, vx1, vy1,
+                        (int)g_shm->ovl_x0, (int)g_shm->ovl_y0, (int)g_shm->ovl_x1, (int)g_shm->ovl_y1, edge_min);
+            }
+        }
 
         SDL_UpdateTexture(tex, NULL, rgb, w * 4);
         SDL_RenderClear(ren);

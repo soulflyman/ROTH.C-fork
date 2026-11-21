@@ -100,7 +100,7 @@ static int g_headless  = 0;    /* --headless / ROTH_HEADLESS=1: no window, shm p
 static int g_sdl_flag  = 0;    /* --sdl / --windowed / ROTH_SDL=1: explicit window (both-mode w/ --headless) */
 static int g_want_shm  = 0;    /* ROTH_SHM=1: publish /dev/shm/roth_fb even under a window */
 static int g_sdl_scale = 0;    /* --scale N / ROTH_SCALE: initial window scale (0 = auto-fit) */
-static int g_sdl_filter = 0;   /* --filter nearest|linear / ROTH_FILTER: final upscale filter (0=nearest default) */
+static int g_sdl_filter = 0;   /* flag word: bit0 = --filter linear / ROTH_FILTER, bit1 = --aa / ROTH_AA (edge anti-aliasing) */
 /* task #103 plugin platform (safe mode / listing; finding 18). MODDABLE flavor only — the vanilla
  * flavor (-DROTH_VANILLA) links no plugin loader, so these options don't exist there (§12). */
 #ifndef ROTH_VANILLA
@@ -479,7 +479,9 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "--scale") && i + 1 < argc) {
             g_sdl_scale = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--filter") && i + 1 < argc) {
-            g_sdl_filter = !strcmp(argv[++i], "linear");   /* anything else (incl. "nearest") -> 0 */
+            if (!strcmp(argv[++i], "linear")) g_sdl_filter |= 1;   /* anything else (incl. "nearest") -> bit 0 clear */
+        } else if (!strcmp(argv[i], "--aa")) {
+            g_sdl_filter |= 2;                          /* edge anti-aliasing of the 3D view (sdl_host.c) */
 #ifndef ROTH_VANILLA
         } else if (!strcmp(argv[i], "--no-mods")) {
             g_no_mods = 1;                     /* task #103: safe mode — no plugins */
@@ -514,8 +516,8 @@ int main(int argc, char **argv)
     if (getenv("ROTH_SHM"))      g_want_shm = 1;       /* publish /dev/shm/roth_fb alongside a window */
     if (!g_sdl_scale && getenv("ROTH_SCALE"))
         g_sdl_scale = atoi(getenv("ROTH_SCALE"));
-    if (!g_sdl_filter && getenv("ROTH_FILTER"))
-        g_sdl_filter = !strcmp(getenv("ROTH_FILTER"), "linear");
+    if (getenv("ROTH_FILTER") && !strcmp(getenv("ROTH_FILTER"), "linear")) g_sdl_filter |= 1;
+    if (getenv("ROTH_AA")) g_sdl_filter |= 2;
 #endif
 
     __asm__ volatile("mov %%es, %0" : "=r"(g_host_es));

@@ -69,7 +69,7 @@ const char *roth_sdk_current_plugin_dir(void) { return g_cur_dispatch_dir ? g_cu
  * re-reads filter_mode every frame, so this is just a plain word write — no lock needed, same
  * convention as the existing cross-thread aspect_w/h and mouse_dx/dy fields. NULL g_shm (pure
  * --headless, no presenter attached) makes this a no-op. */
-void roth_sdk_set_display_filter(uint32_t linear) { if (g_shm) g_shm->filter_mode = linear ? 1u : 0u; }
+void roth_sdk_set_display_filter(uint32_t flags) { if (g_shm) g_shm->filter_mode = flags & 3u; }   /* bit0 linear, bit1 edge-AA */
 
 /* roth_api_v1->get_display_filter (SDK 0.6): read back the live value, so a plugin can reflect
  * the TRUE current state (e.g. seeded from --filter/ROTH_FILTER at boot) on first open instead
@@ -564,11 +564,33 @@ void plugins_dispatch_game_ram_ready(void)
         }
 }
 
+/* Bounding box of what the plugins' compose seam drew this tick, so the presenter's edge-AA pass (filter
+ * bit 1) leaves overlays/text crisp. Only tracked while AA is on: one snapshot memcpy + row memcmps. */
+static uint8_t g_compose_snap[ROTH_FB_MAX];
+
 void plugins_dispatch_compose_tick(uint8_t *pixels, uint32_t width, uint32_t height)
 {
+    int track = g_shm && (g_shm->filter_mode & 2u) && width && height && width * height <= ROTH_FB_MAX;
+    if (track) memcpy(g_compose_snap, pixels, (size_t)width * height);
     for (int i = 0; i < g_npl; i++)
         if (PL_HAS(g_pl[i].info, on_compose_tick) && g_pl[i].info->on_compose_tick)
             g_pl[i].info->on_compose_tick(&roth_host_api_v1, pixels, width, height);
+    if (!g_shm) return;
+    if (!track) { g_shm->ovl_x0 = g_shm->ovl_y0 = g_shm->ovl_x1 = g_shm->ovl_y1 = 0; return; }
+    uint32_t x0 = width, y0 = height, x1 = 0, y1 = 0;
+    for (uint32_t y = 0; y < height; y++) {
+        const uint8_t *a = pixels + (size_t)y * width, *b = g_compose_snap + (size_t)y * width;
+        if (!memcmp(a, b, width)) continue;
+        uint32_t lo = 0, hi = width;
+        while (lo < width && a[lo] == b[lo]) lo++;
+        while (hi > lo && a[hi - 1] == b[hi - 1]) hi--;
+        if (lo < x0) x0 = lo;
+        if (hi > x1) x1 = hi;
+        if (y < y0) y0 = y;
+        y1 = y + 1;
+    }
+    if (x1 > x0) { g_shm->ovl_x0 = x0; g_shm->ovl_y0 = y0; g_shm->ovl_x1 = x1; g_shm->ovl_y1 = y1; }
+    else         { g_shm->ovl_x0 = g_shm->ovl_y0 = g_shm->ovl_x1 = g_shm->ovl_y1 = 0; }
 }
 
 /* on_scancode(TICK_ISR): the input seam, called from iso_apply_scancode (traps.c) — the plugin

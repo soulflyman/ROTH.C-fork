@@ -67,6 +67,15 @@ struct roth_shm {
      * boot; sdl_host.c re-reads it every frame so a plugin can change it live via
      * roth_api_v1->set_display_filter() (sdk/include/roth_sdk.h). */
     volatile uint32_t filter_mode;
+
+    /* filter_mode is a flag word: bit 0 = linear upscale filter, bit 1 = edge anti-aliasing of the 3D view
+     * (sdl_host.c). The AA pass needs to know WHERE the 3D scene is and which pixels a plugin drew over it:
+     *   view_*: the 3D view rectangle in published-frame pixels, published by traps.c only during normal
+     *           gameplay (all 0 otherwise: menus, cutscenes, title screens are never smoothed);
+     *   ovl_*:  bounding box of the pixels the plugins' compose seam changed this tick (empty when x1 <= x0),
+     *           maintained by plugin_loader.c only while AA is on — overlays/text stay crisp. */
+    volatile uint32_t view_x, view_y, view_w, view_h;
+    volatile uint32_t ovl_x0, ovl_y0, ovl_x1, ovl_y1;
 };
 
 #endif

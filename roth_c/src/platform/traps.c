@@ -1771,6 +1771,16 @@ static void shm_tick(void)
 #ifndef ROTH_VANILLA
     plugins_dispatch_compose_tick(pubtgt, g_shm->cur_w, g_shm->cur_h);
 #endif
+    {   /* 3D view rectangle for the presenter's edge-AA pass: gameplay only (movement enabled), else all 0 */
+        uint32_t vx = 0, vy = 0, vw = 0, vh = 0;
+        if (GV8(VA_g_player_movement_enabled) == 1) {
+            vx = GV32(VA_g_view_x); vy = GV32(VA_g_view_y); vw = GV32(VA_g_view_w); vh = GV32(VA_g_view_h);
+            if (GV8(VA_g_hires_line_doubling_flag)) { vy *= 2; vh *= 2; }   /* line-doubled modes: 2x scanlines */
+            if (vx > 0x7fffffffu || vy > 0x7fffffffu || vx + vw > g_shm->cur_w || vy + vh > g_shm->cur_h)
+                vx = vy = vw = vh = 0;
+        }
+        g_shm->view_x = vx; g_shm->view_y = vy; g_shm->view_w = vw; g_shm->view_h = vh;
+    }
     if (ig_staging) {
         uint32_t stage_n = g_shm->cur_w * g_shm->cur_h;
         if (stage_n && stage_n <= ROTH_FB_MAX)
