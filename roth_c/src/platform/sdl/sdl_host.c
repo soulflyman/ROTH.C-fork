@@ -246,6 +246,8 @@ int sdl_present_run(int scale, int filter)
 
     int cur_tex_w = ROTH_FB_W, cur_tex_h = ROTH_FB_H;
     int cur_log_w = ROTH_FB_W, cur_log_h = ROTH_FB_H;
+    SDL_Texture *tex_n = NULL;   /* nearest-neighbour twin, used only to redraw the text band crisply while linear scaling is on */
+    int tex_n_w = 0, tex_n_h = 0;
     SDL_Texture *tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
                                          SDL_TEXTUREACCESS_STREAMING, cur_tex_w, cur_tex_h);
     if (!tex) {
@@ -414,6 +416,32 @@ int sdl_present_run(int scale, int filter)
         SDL_UpdateTexture(tex, NULL, rgb, w * 4);
         SDL_RenderClear(ren);
         SDL_RenderTexture(ren, tex, NULL, NULL);
+        int fvx = (int)g_shm->view_x, fvy = (int)g_shm->view_y, fvw = (int)g_shm->view_w, fvh = (int)g_shm->view_h;
+        if (aa_force_all) { fvx = 0; fvy = 0; fvw = w; fvh = h; }      /* dev/test: whole frame counts as the view */
+        if (cur_filter && fvw > 0 && fvh > 0) {
+            /* Linear scaling softens the engine's subtitle / inspect text at the bottom of the 3D view. Redraw that
+             * band (the bottom tenth of the view, the same strip the AA pass skips) from a nearest-neighbour twin
+             * texture so the text stays crisp while the scene keeps the smooth scaling. */
+            int bx0 = fvx, bx1 = fvx + fvw;
+            int by1 = fvy + fvh;
+            int by0 = by1 - fvh / 10;
+            if (bx0 >= 0 && bx1 <= w && by0 >= 0 && by1 <= h && by1 > by0) {
+                if (!tex_n || tex_n_w != w || tex_n_h != h) {
+                    if (tex_n) SDL_DestroyTexture(tex_n);
+                    tex_n = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+                    if (tex_n) SDL_SetTextureScaleMode(tex_n, SDL_SCALEMODE_NEAREST);
+                    tex_n_w = w; tex_n_h = h;
+                }
+                if (tex_n) {
+                    SDL_Rect up = { 0, by0, w, by1 - by0 };       /* upload only the band's rows */
+                    SDL_UpdateTexture(tex_n, &up, rgb + (size_t)by0 * (size_t)w, w * 4);
+                    SDL_FRect src = { (float)bx0, (float)by0, (float)(bx1 - bx0), (float)(by1 - by0) };
+                    SDL_FRect dst = { (float)bx0 * (float)aw / (float)w, (float)by0 * (float)ah / (float)h,
+                                      (float)(bx1 - bx0) * (float)aw / (float)w, (float)(by1 - by0) * (float)ah / (float)h };
+                    SDL_RenderTexture(ren, tex_n, &src, &dst);
+                }
+            }
+        }
         if (shot_path && !shot_done && ++present_ct >= shot_at) {
             SDL_Surface *sh = SDL_RenderReadPixels(ren, NULL);
             if (sh && SDL_SaveBMP(sh, shot_path))
@@ -432,6 +460,7 @@ int sdl_present_run(int scale, int filter)
         g_shm->quit = 1; /* user closed the window: the game thread's shm_tick honors quit -> _exit */
     sdl_audio_shutdown(); /* M2: stop + join the audio callback, close the synth, quit AUDIO subsystem */
     SDL_DestroyTexture(tex);
+    if (tex_n) SDL_DestroyTexture(tex_n);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();

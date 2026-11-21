@@ -109,7 +109,7 @@ The renderer is an 8-bit palette rasterizer, so true MSAA/SSAA is not possible. 
 post-process on the presented image, limited to the 3D view during gameplay (HUD, menus, cutscenes and mod
 overlays stay untouched). **Known issue: it also softens textures** - any high-contrast texel pattern looks
 like an edge to a luma-based filter, so walls and objects look blurrier than without it. It is off by default and
-deliberately kept in for people who prefer smooth edges over sharp textures. The bottom tenth of the view is left unsmoothed so subtitles and inspect text stay readable. The F11 settings menu has ANTI-ALIASING and an **AA THRESHOLD** row (4-128, default 24; higher = fewer pixels
+deliberately kept in for people who prefer smooth edges over sharp textures. The bottom tenth of the view is left unsmoothed (no AA, and drawn with nearest-neighbour scaling even when SMOOTH SCALING / `--filter linear` is on) so subtitles and inspect text stay crisp and readable. The F11 settings menu has ANTI-ALIASING and an **AA THRESHOLD** row (4-128, default 24; higher = fewer pixels
 touched = less texture softening, but also less edge smoothing); these and SMOOTH SCALING are saved in
 `mods/_settings.cfg` and win over the command line. `ROTH_AA_EDGE=N` sets the starting threshold. A smarter variant (e.g. only smoothing silhouette edges, not texture detail) is a
 possible future improvement.
