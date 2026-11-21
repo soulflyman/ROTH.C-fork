@@ -740,6 +740,23 @@ static uint32_t vd_if_phys_map(uint32_t phys, uint32_t size)
     if (g_os_soft_int(0x31, &v) & 1u) return 0;
     return ((v.ebx & 0xffffu) << 16) | (v.ecx & 0xffffu);
 }
+/* Extended mode table (display-pipeline-overhaul). The original blob g_vesa_scale_and_mode_table has no slack
+ * (VA-preserved), so modes beyond its 10 entries live here, addressed by the same resolution index: 0-9 =
+ * the blob (9 = the repurposed 854x480 slot), 10.. = this array. Same 10-byte descriptor layout
+ * {u16 w,h,bpp,vmode,pitch}; vmode is a synthetic VBE number matched by dpmi.c's g_vbe_modes[]. All are
+ * square-pixel 480-row modes (the row table / FB limits stop there). */
+#define VD_NMODES 13
+static uint16_t g_vd_ext_modes[VD_NMODES - 10][5] = {
+    { 768, 480, 8, 0x105, 0 },
+    { 800, 480, 8, 0x106, 0 },
+    { 896, 480, 8, 0x107, 0 },
+};
+static uint8_t *vd_mode_ent(uint32_t idx)
+{
+    if (idx >= 10) return (uint8_t *)g_vd_ext_modes[idx - 10];
+    return (uint8_t *)(GADDR(VA_g_vesa_scale_and_mode_table + 0x24) + idx * 0xa);
+}
+
 /* set_vesa_video_mode 0x14b24 (EAX=mode, bit14=LFB request) -> CF. Faithful transcription:
  * int10 4F02 -> 4F01 mode info (vd_if_vesa_info) -> stash w/h/pitch in the obj1 slots
  * [0x146e2/e4/dc]; LFB arm (0x14c54): phys-map PhysBasePtr for height*pitch*2 -> [0x146d8];
@@ -783,7 +800,7 @@ static uint32_t vd_if_set_vesa_video_mode(uint32_t mode)
          * matching the other square-pixel modes (400x300/512x384/640x480, see the decoded dword
          * values in obj1_owned.c's comment). */
         uint32_t idx = (uint32_t)G32(VA_g_screen_resolution_index) & 0xffu;
-        G32(VA_g_screen_height + 0x4) = (idx == 9) ? 0xf5c2
+        G32(VA_g_screen_height + 0x4) = (idx >= 9) ? 0xf5c2
                                                     : G32(VA_g_vesa_scale_and_mode_table + idx * 4);
     }
     /* common tail 0x14be7 */
@@ -919,11 +936,11 @@ uint32_t alloc_framebuffer_surface(void)
     G16(VA_g_roth_error_code) = 1;
     int32_t res = G32(VA_g_selected_video_mode);
     regs_t io;
-    if (res == 8 || res == 7 || res == 9) {
-        uint8_t *ent = (uint8_t *)(GADDR(VA_g_vesa_scale_and_mode_table + 0x24) + (uint32_t)res * 0xa);
+    if (res >= 7 && res < VD_NMODES) {
+        uint8_t *ent = vd_mode_ent((uint32_t)res);
         uint32_t w = *(uint16_t *)(ent + 0), h = *(uint16_t *)(ent + 2);
         uint32_t need = w * h;
-        if (need < 0x4b000u) need = 0x4b000u;   /* never shrink below the historical allocation */
+        if (need < 0x69000u) need = 0x69000u;   /* floor = the largest mode (896x480): any hi-res boot can switch live to every hi-res mode */
         G32(VA_g_framebuffer_bytes) = (int32_t)need;
         G8(VA_g_framebuffer_from_dos_block) = 1;
         uint32_t ptr = alloc_dos_block(need);  /* [repointed 0x35a12] EAX=size -> ptr */
@@ -1016,7 +1033,7 @@ static void vd_recenter_cursor(void)
  * lifted render + video_display callees are called directly. */
 void cycle_screen_resolution(void)
 {
-    if ((uint8_t)G8(VA_g_screen_resolution_index) <= 9)                     /* ja 0x1481a skips the (one-time) table build */
+    if ((uint8_t)G8(VA_g_screen_resolution_index) < 0x63)                   /* ja 0x1481a skips the (one-time) table build; only the VGA specials 0x63-0x65 skip */
         init_video_mode_table_once();
 
   retry: {                                             /* 0x1481a */
@@ -1036,10 +1053,10 @@ void cycle_screen_resolution(void)
     if (idx == 0x64) goto vga320x200;
     if (idx == 0x65) goto vga320x400;
     if (idx == 0x66) goto mode13;
-    if ((uint8_t)idx > 9) idx = 0;                     /* cmp al,9; jbe; else sub eax,eax */
+    if ((uint8_t)idx >= VD_NMODES) idx = 0;            /* cmp al,9; jbe; else sub eax,eax (ceiling widened for the extended modes) */
     idx &= 0xff;
     G32(VA_g_screen_resolution_index) = idx;
-    uint8_t *ent = (uint8_t *)(GADDR(VA_g_vesa_scale_and_mode_table + 0x24) + (uint32_t)idx * 0xa);   /* mode_table[idx] (in obj1) */
+    uint8_t *ent = vd_mode_ent((uint32_t)idx);          /* mode_table[idx] (obj1 blob for 0-9, g_vd_ext_modes beyond) */
     uint16_t width  = *(uint16_t *)(ent + 0);
     uint16_t height = *(uint16_t *)(ent + 2);
     if ((int32_t)((uint32_t)width * height) > G32(VA_g_framebuffer_bytes)) goto retry;  /* won't fit the surface */

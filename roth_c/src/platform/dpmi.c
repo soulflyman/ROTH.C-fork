@@ -70,6 +70,10 @@ static const struct vbe_mode g_vbe_modes[] = {
      * (obj1_owned.c), repurposing that always-dead slot. Needs the hi-res framebuffer (grows
      * alloc_framebuffer_surface's allocation beyond the historical 0x4b000). */
     { 0x104, 854, 480 },
+    /* 0x105-0x107: more synthetic wide modes at 480 rows (see g_vd_ext_modes in engine/video_display.c) */
+    { 0x105, 768, 480 },
+    { 0x106, 800, 480 },
+    { 0x107, 896, 480 },
     /* 800x600 (480 KB) exceeds the game's largest framebuffer (0x4b000=300 KB)
      * and our publish buffer (ROTH_FB_MAX), so it is intentionally omitted. */
 };

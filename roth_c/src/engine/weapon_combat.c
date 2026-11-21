@@ -1026,7 +1026,7 @@ void render_weapon_hud(uint32_t eax_arg, uint32_t edx_arg)
     free_hud_panel_das_handles();                               /* re-pointed 0x22633 [L] */
     uint32_t loc1c, loc18, loc10, loc14;
     if (G32(VA_g_screen_pitch + 0x4) != G32(VA_g_view_h)) {
-        uint32_t loc24 = *(volatile uint32_t *)(uintptr_t)(GADDR(VA_g_choice_selected_index + 0x6c) + ((uint32_t)G32(VA_g_screen_resolution_index) << 3));
+        uint32_t loc24 = *(volatile uint32_t *)(uintptr_t)(GADDR(VA_g_choice_selected_index + 0x6c) + ((uint32_t)(G32(VA_g_screen_resolution_index) > 8 ? 8 : G32(VA_g_screen_resolution_index)) << 3));   /* per-index HUD layout table only has 0-8: wide modes reuse 640x480's */
         if (G32(VA_g_hud_weapon_das_handle + 0x4) != 0) { loc1c = 0x120; loc18 = 0x3c; }
         else                   { loc1c = 0x90;  loc18 = 0x1e; }
         loc10 = (uint32_t)G32(VA_g_screen_pitch + 0x4) - loc18 - loc24;

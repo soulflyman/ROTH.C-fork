@@ -413,10 +413,10 @@ typedef enum { ST_CLOSED, ST_MAIN, ST_REBIND, ST_CAPTURE } ui_state_t;
 #define VA_SELECTED_MODE    0x7f578u   /* g_selected_video_mode: index saved to ROTH.INI on exit */
 #define VA_PENDING_ACTION   0x7fea8u   /* g_pending_game_action (byte; bit 4 = apply resolution) */
 #define VA_FRAMEBUFFER_BYTES 0x85478u
-#define VA_MODE_TABLE       0x146e8u   /* g_vesa_scale_and_mode_table; descriptors at +0x24, stride 10 */
-typedef struct { int idx; const char *name; } res_opt_t;
+typedef struct { int idx; const char *name; uint32_t w, h; } res_opt_t;
 static const res_opt_t RES_LIST[] = {
-    {1, "320X200"}, {2, "320X400"}, {7, "640X400"}, {8, "640X480"}, {9, "854X480"},
+    {1, "320X200", 320, 200}, {2, "320X400", 320, 400}, {7, "640X400", 640, 400}, {8, "640X480", 640, 480},
+    {9, "854X480", 854, 480}, {10, "768X480", 768, 480}, {11, "800X480", 800, 480}, {12, "896X480", 896, 480},
 };
 #define NUM_RES ((int)(sizeof RES_LIST / sizeof *RES_LIST))
 static volatile int g_res_sel;                  /* index into RES_LIST shown in the row */
@@ -789,8 +789,7 @@ static void apply_resolution(const struct roth_api_v1 *api)
     const struct roth_game_ram_api_v1 *gr = api->game_ram;
     int idx = RES_LIST[g_res_sel].idx;
     if ((int)gr->u32(VA_RES_INDEX) == idx) { snprintf(g_res_status, sizeof g_res_status, "ALREADY ACTIVE"); return; }
-    uint32_t d = VA_MODE_TABLE + 0x24u + (uint32_t)idx * 10u;
-    uint32_t need = (uint32_t)gr->u16(d) * (uint32_t)gr->u16(d + 2);
+    uint32_t need = RES_LIST[g_res_sel].w * RES_LIST[g_res_sel].h;   /* modes >= 10 aren't in the game_ram table blob */
     int fits = need > 0 && need <= gr->u32(VA_FRAMEBUFFER_BYTES);
     gr->set_u32(VA_SELECTED_MODE, (uint32_t)idx);              /* what write_roth_ini saves on exit */
     int ini = patch_ini_video_mode(idx);

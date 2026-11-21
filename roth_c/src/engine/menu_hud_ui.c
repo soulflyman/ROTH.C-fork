@@ -442,6 +442,7 @@ void refresh_hud_layout(void)
             s14 = 0xc;
         }
         int32_t res = G32(VA_g_screen_resolution_index);              /* g_screen_resolution_index */
+        if (res > 8) res = 8;                                         /* per-index HUD layout table only has 0-8: wide modes reuse 640x480's */
         y   += *(volatile int32_t *)(GADDR(VA_g_choice_selected_index + 0x20) + (uintptr_t)res * 8);
         s1c += *(volatile int32_t *)(GADDR(VA_g_choice_selected_index + 0x24) + (uintptr_t)res * 8);
         x = (G32(VA_g_screen_pitch + 0x4) - s14) - s1c;
