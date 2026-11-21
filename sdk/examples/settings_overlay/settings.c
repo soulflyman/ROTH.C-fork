@@ -445,12 +445,13 @@ static int g_regrows_built;
 #define IN_REG(r)       ((r) >= REG_BASE && (r) < REG_END)
 static volatile int g_capture_row = -1;         /* registry row waiting for a key (ST_CAPTURE) */
 static volatile int g_commit_pending = -1;      /* registry index to setting_commit from on_frame_game */
-#define VISIBLE_ROWS 16
+#define VISIBLE_ROWS 40
 
 static volatile ui_state_t g_state = ST_CLOSED;
 static volatile int g_overlay_open;
 static int g_sel = 0;
 static int g_scroll_top = 0;
+static volatile int g_vis_rows = VISIBLE_ROWS;   /* rows that actually fit the box; published by on_compose_tick */
 
 static int32_t g_toggle_key = 0x57; /* F11 — a registered KEY setting, so the user can move it */
 
@@ -606,7 +607,7 @@ static void move_selection(int dir)
     } while (!row_selectable(next) && next != g_sel);
     g_sel = next;
     if (g_sel < g_scroll_top) g_scroll_top = g_sel;
-    if (g_sel >= g_scroll_top + VISIBLE_ROWS) g_scroll_top = g_sel - VISIBLE_ROWS + 1;
+    if (g_sel >= g_scroll_top + g_vis_rows) g_scroll_top = g_sel - g_vis_rows + 1;
 }
 
 /* Adjust the registry setting shown on `row` by one step (dir = -1 / +1). TICK_ISR-safe: it only writes
@@ -896,6 +897,15 @@ static void draw_value_bool(uint8_t *pixels, uint32_t w, uint32_t h, int x, int 
     draw_string(pixels, w, h, x, y, on ? "ON" : "OFF", COL_TEXT, 1);
 }
 
+/* 7x4 triangle: the scroll-indicator arrows (the 5x7 font has no arrow glyphs). */
+static void draw_arrow(uint8_t *pixels, uint32_t w, uint32_t h, int cx, int y, int up, uint8_t color)
+{
+    for (int r = 0; r < 4; r++) {
+        int wd = up ? 2 * r + 1 : 7 - 2 * r;
+        fill_rect(pixels, w, h, cx - wd / 2, y + r, wd, 1, color);
+    }
+}
+
 static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
                             uint32_t width, uint32_t height)
 {
@@ -919,7 +929,16 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
     int list_y = by + 36;
     int list_x = bx + 12;
 
-    for (int i = 0; i < VISIBLE_ROWS; i++) {
+    int vis = (by + bh - 16 - list_y) / row_h;       /* rows that fit above the footer (small modes have short boxes) */
+    if (vis > VISIBLE_ROWS) vis = VISIBLE_ROWS;
+    if (vis < 3) vis = 3;
+    g_vis_rows = vis;
+    if (g_scroll_top > 0)                              /* more rows above */
+        draw_arrow(pixels, width, height, bx + bw - 18, list_y, 1, COL_TEXT);
+    if (g_scroll_top + vis < NUM_ROWS)                 /* more rows below */
+        draw_arrow(pixels, width, height, bx + bw - 18, list_y + (vis - 1) * row_h + 2, 0, COL_TEXT);
+
+    for (int i = 0; i < vis; i++) {
         int row = g_scroll_top + i;
         if (row >= NUM_ROWS) break;
         int y = list_y + i * row_h;
