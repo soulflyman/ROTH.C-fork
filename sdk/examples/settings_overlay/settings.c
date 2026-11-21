@@ -428,10 +428,10 @@ static char g_game_dir[2600];
 
 /* ---- row model. One flat list, built once at the first on_frame_game (when every plugin's on_load has run):
  * category headers (level 0), sub-headers (level 1) and rows. Indent = 2 characters per level. ---- */
-typedef enum { RK_HEADER, RK_YAW, RK_PITCH, RK_INVERT, RK_RES, RK_REG, RK_ACTION } rowkind_t;
+typedef enum { RK_HEADER, RK_YAW, RK_PITCH, RK_INVERT, RK_RES, RK_REG, RK_ACTION, RK_NOTE } rowkind_t;   /* RK_NOTE: plain text line, not selectable */
 typedef struct {
     uint8_t kind, level;
-    const char *title;                        /* RK_HEADER */
+    const char *title;                        /* RK_HEADER / RK_NOTE text */
     const struct roth_setting_v1 *s;          /* RK_REG */
     uint32_t idx;                             /* RK_REG: registry index; RK_ACTION: kb_actions[] index */
 } row_t;
@@ -590,7 +590,7 @@ static void on_load(const struct roth_api_v1 *api)
 /* ---- row navigation: headers are never selectable ---- */
 static int row_selectable(int row)
 {
-    return row >= 0 && row < g_nrows && g_rows[row].kind != RK_HEADER;
+    return row >= 0 && row < g_nrows && g_rows[row].kind != RK_HEADER && g_rows[row].kind != RK_NOTE;
 }
 
 static void move_selection(int dir)
@@ -828,17 +828,17 @@ static void apply_resolution(const struct roth_api_v1 *api)
 }
 
 /* Key-binding topics: which kb_actions[] names go under which sub-heading. Anything unlisted lands in DEBUG. */
-static const struct { const char *title; const char *names[12]; } KB_TOPICS[] = {
-    { "MOVEMENT",  { "move_forward", "move_backward", "turn_left", "turn_right", "strafe_left", "strafe_right",
+static const struct { const char *title; const char *note; const char *names[12]; } KB_TOPICS[] = {
+    { "MOVEMENT", NULL,  { "move_forward", "move_backward", "turn_left", "turn_right", "strafe_left", "strafe_right",
                      "jump", "crouch", "sprint_toggle", NULL } },
-    { "LOOK",      { "look_up", "look_down", "look_recenter_up", "look_recenter_down", NULL } },
-    { "COMBAT",    { "fire", "weapon_1", "weapon_2", "weapon_3", "weapon_4", "weapon_5", "weapon_6", "weapon_overlay", NULL } },
-    { "INVENTORY", { "inventory", "use_enter", "easy_select", "choice_up", "choice_down", NULL } },
-    { "INTERFACE", { "escape_menu", "subtitles", "help_overlay", "mouse_swap", NULL } },
-    { "SAVE AND LOAD", { "quicksave", "quickload", NULL } },
-    { "DISPLAY",   { "display_cycle", "display_cycle_alt", "gamma_up", "gamma_down", "view_scale_0", "view_smaller",
+    { "LOOK", NULL,      { "look_up", "look_down", "look_recenter_up", "look_recenter_down", NULL } },
+    { "COMBAT", NULL,    { "fire", "weapon_1", "weapon_2", "weapon_3", "weapon_4", "weapon_5", "weapon_6", "weapon_overlay", NULL } },
+    { "INVENTORY", NULL, { "inventory", "use_enter", "easy_select", "choice_up", "choice_down", NULL } },
+    { "INTERFACE", NULL, { "escape_menu", "subtitles", "help_overlay", "mouse_swap", NULL } },
+    { "SAVE AND LOAD", NULL, { "quicksave", "quickload", NULL } },
+    { "DISPLAY", NULL,   { "display_cycle", "display_cycle_alt", "gamma_up", "gamma_down", "view_scale_0", "view_smaller",
                      "view_larger", "snapshot", NULL } },
-    { "DEBUG",     { "show_version", "render_mode", "flush_textures", "wireframe_map", "dev_map_menu", "dev_open_door",
+    { "DEBUG",     "ONLY WORKS WITH THE --DEVMODE OPTION", { "show_version", "render_mode", "flush_textures", "wireframe_map", "dev_map_menu", "dev_open_door",
                      "noop_f7", "noop_n", "noop_t", NULL } },
 };
 #define NUM_TOPICS ((int)(sizeof KB_TOPICS / sizeof *KB_TOPICS))
@@ -898,7 +898,11 @@ static void build_rows(const struct roth_api_v1 *api)
         int shown = 0;
         for (int a = 0; a < NUM_ACTIONS; a++) {
             if (topic_of_action(kb_actions[a].name) != t) continue;
-            if (!shown) { add_row(&n, RK_HEADER, 1, KB_TOPICS[t].title, NULL, 0); shown = 1; }
+            if (!shown) {
+                add_row(&n, RK_HEADER, 1, KB_TOPICS[t].title, NULL, 0);
+                if (KB_TOPICS[t].note) add_row(&n, RK_NOTE, 2, KB_TOPICS[t].note, NULL, 0);
+                shown = 1;
+            }
             add_row(&n, RK_ACTION, 2, NULL, NULL, (uint32_t)a);
         }
     }
@@ -1037,6 +1041,9 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
         const row_t *rr = &g_rows[row];
         int lx = list_x + rr->level * INDENT_PX, vx = list_x + 150;
         switch (rr->kind) {
+        case RK_NOTE:
+            draw_string(pixels, width, height, lx, y, rr->title, COL_TEXT, 1);
+            break;
         case RK_HEADER: {
             char tt[40];                                  /* "Name (long description)" -> "Name" */
             snprintf(tt, sizeof tt, "%.36s", rr->title);

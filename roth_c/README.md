@@ -96,6 +96,7 @@ Common switches:
 | `--sf2 FILE`        | use a specific SoundFont (otherwise: `ROTH_SF2` env, `gm.sf2` beside the binary, or a system soundfont) |
 | `--filter linear`   | smooth (bilinear) upscaling instead of crisp nearest-neighbour (`ROTH_FILTER=linear`)                   |
 | `--aa`              | edge anti-aliasing of the 3D view (`ROTH_AA=1`; also a row in the F11 settings menu) - see the note below |
+| `--devmode`         | enable the original's developer keys (e.g. wireframe map, open door); the DEBUG key bindings in the F11 menu need it |
 | `--no-mods`         | start with the mod platform inert (`ROTH_MODS=0` does the same)                                         |
 | `--list-mods`       | resolve and print the installed mods, then exit                                                         |
 | `--strict-mods`     | make mod-validation warnings fatal                                                                      |
