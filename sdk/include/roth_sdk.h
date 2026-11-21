@@ -21,9 +21,9 @@ extern "C" {
 
 /* ---- versions ------------------------------------------------------------ */
 #define ROTH_SDK_MAJOR 0
-#define ROTH_SDK_MINOR 6
+#define ROTH_SDK_MINOR 7
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 6
+#define ROTH_ABI_MINOR 7
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
@@ -1225,6 +1225,9 @@ struct roth_engine_api_v1 {
     void (ROTH_CDECL *dos_close_handle)(uint32_t);  /* id 0x41b41 */
     void (ROTH_CDECL *blit_das_image_to_buffer)(uint32_t, uint32_t, uint32_t, uint32_t);  /* id 0x1325b */
     void (ROTH_CDECL *draw_popup_shadow_border_smc)(int32_t, int32_t, int32_t, int32_t);  /* id 0x12dde */
+    void (ROTH_CDECL *reset_weapon_fire_timing)(void);  /* id 0x1765c */
+    void (ROTH_CDECL *activate_weapon_item)(uint32_t, uint32_t);  /* id 0x184ab */
+    void (ROTH_CDECL *render_weapon_hud)(uint32_t, uint32_t);  /* id 0x24165 */
 };
 
 /* ---- game_ram accessors: bounded little-endian --------------------------- */
@@ -1353,6 +1356,9 @@ ROTH_PLUGIN_EXPORT const struct roth_plugin_info_v1 *roth_plugin_query_v1(void);
 #define ROTH_CALL_dos_close_handle(api, ...) ((api)->engine->dos_close_handle(__VA_ARGS__))
 #define ROTH_CALL_blit_das_image_to_buffer(api, ...) ((api)->engine->blit_das_image_to_buffer(__VA_ARGS__))
 #define ROTH_CALL_draw_popup_shadow_border_smc(api, ...) ((api)->engine->draw_popup_shadow_border_smc(__VA_ARGS__))
+#define ROTH_CALL_reset_weapon_fire_timing(api, ...) ((api)->engine->reset_weapon_fire_timing(__VA_ARGS__))
+#define ROTH_CALL_activate_weapon_item(api, ...) ((api)->engine->activate_weapon_item(__VA_ARGS__))
+#define ROTH_CALL_render_weapon_hud(api, ...) ((api)->engine->render_weapon_hud(__VA_ARGS__))
 
 #ifdef __cplusplus
 }

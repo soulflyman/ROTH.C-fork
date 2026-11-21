@@ -2,9 +2,9 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 6,
+ "sdk_minor": 7,
  "abi_major": 0,
- "abi_minor": 6,
+ "abi_minor": 7,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
@@ -64,7 +64,7 @@
    ]
   },
   "roth_engine_api_v1": {
-   "size": 96,
+   "size": 108,
    "fields": [
     {
      "slot": 0,
@@ -445,6 +445,48 @@
       "int32_t",
       "int32_t",
       "int32_t"
+     ]
+    },
+    {
+     "slot": 24,
+     "name": "reset_weapon_fire_timing",
+     "id": 95836,
+     "va": "0x1765c",
+     "signature_id": 95836,
+     "offset": 96,
+     "size": 4,
+     "kind": "fnptr",
+     "ret": "void",
+     "params": []
+    },
+    {
+     "slot": 25,
+     "name": "activate_weapon_item",
+     "id": 99499,
+     "va": "0x184ab",
+     "signature_id": 99499,
+     "offset": 100,
+     "size": 4,
+     "kind": "fnptr",
+     "ret": "void",
+     "params": [
+      "uint32_t",
+      "uint32_t"
+     ]
+    },
+    {
+     "slot": 26,
+     "name": "render_weapon_hud",
+     "id": 147813,
+     "va": "0x24165",
+     "signature_id": 147813,
+     "offset": 104,
+     "size": 4,
+     "kind": "fnptr",
+     "ret": "void",
+     "params": [
+      "uint32_t",
+      "uint32_t"
      ]
     }
    ]
@@ -1167,6 +1209,48 @@
     "int32_t",
     "int32_t",
     "int32_t"
+   ]
+  },
+  {
+   "slot": 24,
+   "name": "reset_weapon_fire_timing",
+   "id": 95836,
+   "va": "0x1765c",
+   "signature_id": 95836,
+   "offset": 96,
+   "size": 4,
+   "kind": "fnptr",
+   "ret": "void",
+   "params": []
+  },
+  {
+   "slot": 25,
+   "name": "activate_weapon_item",
+   "id": 99499,
+   "va": "0x184ab",
+   "signature_id": 99499,
+   "offset": 100,
+   "size": 4,
+   "kind": "fnptr",
+   "ret": "void",
+   "params": [
+    "uint32_t",
+    "uint32_t"
+   ]
+  },
+  {
+   "slot": 26,
+   "name": "render_weapon_hud",
+   "id": 147813,
+   "va": "0x24165",
+   "signature_id": 147813,
+   "offset": 104,
+   "size": 4,
+   "kind": "fnptr",
+   "ret": "void",
+   "params": [
+    "uint32_t",
+    "uint32_t"
    ]
   }
  ],

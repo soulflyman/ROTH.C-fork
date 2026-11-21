@@ -62,6 +62,10 @@ STARTER_SET = [
     # --- v0.5 (doc_viewer runtime-plugin port) — appended at the tail ---
     "blit_das_image_to_buffer",     # slot 22  0x1325b  blit a DAS descriptor 1:1 into a buffer
     "draw_popup_shadow_border_smc", # slot 23  0x12dde  draw the popup 9-slice shadow border
+    # --- v0.7 (single-page inventory overlay mod) — the weapon-equip sequence select_weapon_by_number runs ---
+    "reset_weapon_fire_timing",     # slot 24  0x1765c  disarm/reset the weapon fire-timing state
+    "activate_weapon_item",         # slot 25  0x184ab  equip: (carried-slot ptr, dbase100 item id)
+    "render_weapon_hud",            # slot 26  0x24165  redraw the weapon HUD panel
     # APPEND new exposures HERE — never above, never reorder (slot order is ABI).
 ]
 

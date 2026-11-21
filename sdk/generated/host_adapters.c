@@ -100,6 +100,9 @@ static const struct roth_engine_api_v1 ENG = {
     .dos_close_handle = dos_close_handle,
     .blit_das_image_to_buffer = blit_das_image_to_buffer,
     .draw_popup_shadow_border_smc = draw_popup_shadow_border_smc,
+    .reset_weapon_fire_timing = reset_weapon_fire_timing,
+    .activate_weapon_item = activate_weapon_item,
+    .render_weapon_hud = render_weapon_hud,
 };
 
 /* host services on the top-level table: provided by the host loader (extern here — the
