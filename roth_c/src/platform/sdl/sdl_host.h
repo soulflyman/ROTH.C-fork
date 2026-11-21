@@ -11,8 +11,9 @@
  * g_shm frame (palette->RGBA, correct aspect for every mode incl. 320x400 double-scan) and
  * writes the existing input rings (set-1 scancodes, relative mouse deltas + buttons), exactly
  * as the external viewer does — now in-process. `scale` = initial window scale (0 = auto-fit).
+ * `filter` = final upscale filter, 0 = nearest (default, crisp pixels), 1 = linear (softer).
  * Returns 0 on clean shutdown (window closed / game exited), <0 if SDL failed to init. */
-int sdl_present_run(int scale);
+int sdl_present_run(int scale, int filter);
 
 /* M3 auto-sanity (docs/SDL3_FOLD_DESIGN.md §6): probe whether SDL video can initialise (a display +
  * driver exist) WITHOUT committing the game thread. Returns 1 if a window is possible, 0 otherwise.

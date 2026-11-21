@@ -9,6 +9,7 @@ roth_c/dist/
 roth_c/dist-win/
 roth_c/src/platform/viewer/roth-view
 roth_c/src/platform/viewer/roth-inject
+roth_c/src/platform/viewer/dumpfb
 *.o
 
 # the one-time local SDL3 build (tools/build_sdl3_i386.sh creates this)

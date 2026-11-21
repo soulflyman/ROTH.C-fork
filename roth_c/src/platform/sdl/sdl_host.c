@@ -141,8 +141,10 @@ int sdl_video_preflight(void)
     return 1;
 }
 
-int sdl_present_run(int scale)
+int sdl_present_run(int scale, int filter)
 {
+    const SDL_ScaleMode scale_mode = filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
+
     if (!g_shm) {
         fprintf(stderr, "[sdl] no shared framebuffer — cannot present\n");
         return -1;
@@ -199,7 +201,7 @@ int sdl_present_run(int scale)
         SDL_Quit();
         return -1;
     }
-    SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+    SDL_SetTextureScaleMode(tex, scale_mode);
     /* SDL_SetRenderLogicalPresentation subsumes the viewer's RenderSetLogicalSize + IntegerScale +
      * the aspect_w/aspect_h juggling (design §2.7, §12): the texture stays cur_w x cur_h (full
      * detail) and is fit to the logical aspect rectangle, letterboxed to the window. 320x400
@@ -302,7 +304,7 @@ int sdl_present_run(int scale)
             SDL_DestroyTexture(tex);
             tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
                                     SDL_TEXTUREACCESS_STREAMING, w, h);
-            SDL_SetTextureScaleMode(tex, SDL_SCALEMODE_NEAREST);
+            SDL_SetTextureScaleMode(tex, scale_mode);
             cur_tex_w = w; cur_tex_h = h;
         }
         if (aw != cur_log_w || ah != cur_log_h) {

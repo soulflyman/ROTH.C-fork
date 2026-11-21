@@ -4,7 +4,7 @@ CC      := gcc
 CFLAGS  := -O2 -g -Wall -Wextra $(shell pkg-config --cflags sdl2)
 LDFLAGS := $(shell pkg-config --libs sdl2) -lrt
 
-all: roth-view roth-inject
+all: roth-view roth-inject dumpfb
 
 roth-view: viewer.c ../shared_fb.h ../shared_audio.h ../shared_midi.h tsf.h
 	$(CC) $(CFLAGS) -o $@ viewer.c $(LDFLAGS) -lm
@@ -13,7 +13,11 @@ roth-view: viewer.c ../shared_fb.h ../shared_audio.h ../shared_midi.h tsf.h
 roth-inject: inject_test.c ../shared_fb.h
 	$(CC) -O2 -g -o $@ inject_test.c -lrt
 
+# dumps the current shm frame to a .ppm for visual inspection — no SDL, only -lrt
+dumpfb: dumpfb.c ../shared_fb.h
+	$(CC) -O2 -g -o $@ dumpfb.c -lrt
+
 clean:
-	rm -f roth-view roth-inject
+	rm -f roth-view roth-inject dumpfb
 
 .PHONY: all clean
