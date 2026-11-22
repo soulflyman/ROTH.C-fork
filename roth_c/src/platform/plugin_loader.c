@@ -69,7 +69,7 @@ const char *roth_sdk_current_plugin_dir(void) { return g_cur_dispatch_dir ? g_cu
  * re-reads filter_mode every frame, so this is just a plain word write — no lock needed, same
  * convention as the existing cross-thread aspect_w/h and mouse_dx/dy fields. NULL g_shm (pure
  * --headless, no presenter attached) makes this a no-op. */
-void roth_sdk_set_display_filter(uint32_t flags) { if (g_shm) g_shm->filter_mode = flags & 0xff03u; }   /* bit0 linear, bit1 edge-AA, bits 8-15 AA edge threshold (0 = default) */
+void roth_sdk_set_display_filter(uint32_t flags) { if (g_shm) g_shm->filter_mode = flags & 0x0fffff03u; }   /* bit0 linear, bit1 edge-AA, bits 8-15 AA threshold (0 = default), 16-19 scaler, 20 integer scale, 24-27 scanlines */
 
 /* roth_api_v1->get_display_filter (SDK 0.6): read back the live value, so a plugin can reflect
  * the TRUE current state (e.g. seeded from --filter/ROTH_FILTER at boot) on first open instead

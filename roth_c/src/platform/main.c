@@ -100,7 +100,26 @@ static int g_headless  = 0;    /* --headless / ROTH_HEADLESS=1: no window, shm p
 static int g_sdl_flag  = 0;    /* --sdl / --windowed / ROTH_SDL=1: explicit window (both-mode w/ --headless) */
 static int g_want_shm  = 0;    /* ROTH_SHM=1: publish /dev/shm/roth_fb even under a window */
 static int g_sdl_scale = 0;    /* --scale N / ROTH_SCALE: initial window scale (0 = auto-fit) */
-static int g_sdl_filter = 0;   /* flag word: bit0 = --filter linear / ROTH_FILTER, bit1 = --aa / ROTH_AA (edge anti-aliasing) */
+static int g_sdl_filter = 0;   /* flag word: bit0 linear (legacy), bit1 --aa / ROTH_AA (edge anti-aliasing), bits 16-19 scaler, bit 20 integer scale, bits 24-27 scanlines */
+
+/* --filter / ROTH_FILTER name -> scaler id in bits 16-19 (and the legacy linear bit 0) */
+static void set_filter_name(const char *n)
+{
+    static const char *const names[] = { "nearest", "linear", "sharp", "scale2x" };
+    g_sdl_filter &= ~(0xf << 16 | 1);
+    for (int i = 0; i < 4; i++)
+        if (!strcmp(n, names[i])) {
+            g_sdl_filter |= i << 16;
+            if (i == 1) g_sdl_filter |= 1;
+            return;
+        }
+    fprintf(stderr, "[main] unknown filter '%s' (nearest|linear|sharp|scale2x): using nearest\n", n);
+}
+static void set_scanlines(int n)
+{
+    g_sdl_filter &= ~(0xf << 24);
+    g_sdl_filter |= (n < 0 ? 0 : n > 8 ? 8 : n) << 24;
+}
 /* task #103 plugin platform (safe mode / listing; finding 18). MODDABLE flavor only — the vanilla
  * flavor (-DROTH_VANILLA) links no plugin loader, so these options don't exist there (§12). */
 #ifndef ROTH_VANILLA
@@ -479,7 +498,11 @@ int main(int argc, char **argv)
         } else if (!strcmp(argv[i], "--scale") && i + 1 < argc) {
             g_sdl_scale = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--filter") && i + 1 < argc) {
-            if (!strcmp(argv[++i], "linear")) g_sdl_filter |= 1;   /* anything else (incl. "nearest") -> bit 0 clear */
+            set_filter_name(argv[++i]);
+        } else if (!strcmp(argv[i], "--integer-scale")) {
+            g_sdl_filter |= 1 << 20;
+        } else if (!strcmp(argv[i], "--scanlines") && i + 1 < argc) {
+            set_scanlines(atoi(argv[++i]));
         } else if (!strcmp(argv[i], "--aa")) {
             g_sdl_filter |= 2;                          /* edge anti-aliasing of the 3D view (sdl_host.c) */
 #ifndef ROTH_VANILLA
@@ -516,7 +539,9 @@ int main(int argc, char **argv)
     if (getenv("ROTH_SHM"))      g_want_shm = 1;       /* publish /dev/shm/roth_fb alongside a window */
     if (!g_sdl_scale && getenv("ROTH_SCALE"))
         g_sdl_scale = atoi(getenv("ROTH_SCALE"));
-    if (getenv("ROTH_FILTER") && !strcmp(getenv("ROTH_FILTER"), "linear")) g_sdl_filter |= 1;
+    if (getenv("ROTH_FILTER")) set_filter_name(getenv("ROTH_FILTER"));
+    if (getenv("ROTH_INTEGER_SCALE")) g_sdl_filter |= 1 << 20;
+    if (getenv("ROTH_SCANLINES")) set_scanlines(atoi(getenv("ROTH_SCANLINES")));
     if (getenv("ROTH_AA")) g_sdl_filter |= 2;
 #endif
 

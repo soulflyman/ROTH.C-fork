@@ -466,12 +466,15 @@ static int g_mouselook_dirty = 0;
 /* Display options (upscale filter / edge anti-aliasing / AA threshold) are REGISTRY settings registered by this
  * overlay itself, so they persist in mods/_settings.cfg like any mod's; on_change pushes them to the host via
  * set_display_filter (flag word: bit0 linear, bit1 edge-AA, bits 8-15 AA threshold). */
-static int32_t g_set_linear = 0, g_set_aa = 0, g_set_aa_thr = 24;
+static int32_t g_set_linear = 0 /* scaler id: 0 nearest, 1 linear, 2 sharp-bilinear, 3 scale2x (key stays "linear_filter" so old saves still load) */,
+               g_set_aa = 0, g_set_aa_thr = 24, g_set_integer = 0, g_set_scan = 0;
+static const char *const g_scaler_names[] = { "NEAREST", "LINEAR", "SHARP", "SCALE2X" };
 static const struct roth_api_v1 *g_api;
 static void apply_display_flags(void)
 {
     if (!g_api) return;
-    g_api->set_display_filter((uint32_t)((g_set_linear ? 1 : 0) | (g_set_aa ? 2 : 0) | ((g_set_aa_thr & 0xff) << 8)));
+    g_api->set_display_filter((uint32_t)((g_set_linear == 1 ? 1 : 0) | (g_set_aa ? 2 : 0) | ((g_set_aa_thr & 0xff) << 8) |
+                                         ((g_set_linear & 0xf) << 16) | ((g_set_integer ? 1 : 0) << 20) | ((g_set_scan & 0xf) << 24)));
 }
 
 static uint8_t g_action_sc[64]; /* current scancode per action, refreshed from game_ram on open */
@@ -530,7 +533,12 @@ static void on_load(const struct roth_api_v1 *api)
     {   /* seed the display options from the host's current flags (CLI --filter/--aa, ROTH_AA_EDGE), then register
          * them: a saved value from mods/_settings.cfg is applied by the host during registration and wins. */
         uint32_t ff = api->get_display_filter();
-        g_set_linear = (int32_t)(ff & 1u);
+        g_set_linear = (int32_t)((ff >> 16) & 0xfu);
+        if (g_set_linear == 0 && (ff & 1u)) g_set_linear = 1;
+        if (g_set_linear > 3) g_set_linear = 0;
+        g_set_integer = (int32_t)((ff >> 20) & 1u);
+        g_set_scan = (int32_t)((ff >> 24) & 0xfu);
+        if (g_set_scan > 8) g_set_scan = 8;
         g_set_aa = (int32_t)((ff >> 1) & 1u);
         if ((ff >> 8) & 0xffu) g_set_aa_thr = (int32_t)((ff >> 8) & 0xffu);
         else if (getenv("ROTH_AA_EDGE")) g_set_aa_thr = atoi(getenv("ROTH_AA_EDGE"));
@@ -539,8 +547,18 @@ static void on_load(const struct roth_api_v1 *api)
         struct roth_setting_v1 d;
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";
-        d.key = "linear_filter"; d.label = "SMOOTH SCALING"; d.type = ROTH_SETTING_BOOL; d.value = &g_set_linear;
+        d.key = "linear_filter"; d.label = "UPSCALER"; d.type = ROTH_SETTING_ENUM; d.value = &g_set_linear;
+        d.imax = 3; d.enum_names = g_scaler_names; d.on_change = apply_display_flags;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";
+        d.key = "integer_scale"; d.label = "INTEGER SCALING"; d.type = ROTH_SETTING_BOOL; d.value = &g_set_integer;
         d.on_change = apply_display_flags;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";
+        d.key = "scanlines"; d.label = "SCANLINES"; d.type = ROTH_SETTING_INT; d.value = &g_set_scan;
+        d.imin = 0; d.imax = 8; d.istep = 1; d.on_change = apply_display_flags;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";

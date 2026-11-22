@@ -192,10 +192,53 @@ static void aa_pass(uint32_t *rgb, const uint8_t *pix, const uint32_t *pal, int 
     }
 }
 
+/* ---- upscale scalers / integer scaling / scanlines (filter_mode bits 16-27) ------------------------
+ * filter_mode: bit 0 linear (legacy), bits 16-19 scaler id, bit 20 integer scaling, bits 24-27 scanline strength. */
+enum { SCALER_NEAREST = 0, SCALER_LINEAR = 1, SCALER_SHARP = 2, SCALER_SCALE2X = 3, SCALER_COUNT = 4 };
+
+static int fm_scaler(uint32_t fm)
+{
+    int s = (int)((fm >> 16) & 0xfu);
+    if (s == 0 && (fm & 1u)) s = SCALER_LINEAR;
+    return s < SCALER_COUNT ? s : SCALER_NEAREST;
+}
+
+/* Scale2x / AdvMAME2x (EPX): doubles the image, smoothing diagonals of flat colour areas without blurring.
+ * Equality is exact on the ARGB value (a palette index maps to one colour). */
+static void scale2x_pass(uint32_t *dst, const uint32_t *src, int w, int h)
+{
+    const size_t dw = (size_t)w * 2;
+    for (int y = 0; y < h; y++) {
+        const uint32_t *r0 = src + (size_t)(y > 0 ? y - 1 : 0) * w;
+        const uint32_t *r1 = src + (size_t)y * w;
+        const uint32_t *r2 = src + (size_t)(y < h - 1 ? y + 1 : h - 1) * w;
+        uint32_t *o0 = dst + (size_t)y * 2 * dw, *o1 = o0 + dw;
+        for (int x = 0; x < w; x++) {
+            uint32_t E = r1[x], B = r0[x], H = r2[x];
+            uint32_t D = r1[x > 0 ? x - 1 : 0], F = r1[x < w - 1 ? x + 1 : w - 1];
+            uint32_t e0 = E, e1 = E, e2 = E, e3 = E;
+            if (B != H && D != F) {
+                if (D == B) e0 = D;
+                if (B == F) e1 = F;
+                if (D == H) e2 = D;
+                if (H == F) e3 = F;
+            }
+            o0[2 * x] = e0; o0[2 * x + 1] = e1;
+            o1[2 * x] = e2; o1[2 * x + 1] = e3;
+        }
+    }
+}
+
+static uint32_t g_scale2x_buf[(size_t)ROTH_FB_MAXW * 2 * ROTH_FB_MAXH * 2];
+
 int sdl_present_run(int scale, int filter)
 {
-    int cur_filter = filter & 1;   /* bit 0 = linear scaling; re-read each frame from g_shm->filter_mode (plugins may change it) */
-    SDL_ScaleMode scale_mode = cur_filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
+    int cur_scaler = fm_scaler((uint32_t)filter);
+    int cur_integer = (filter >> 20) & 1;
+    SDL_ScaleMode scale_mode = cur_scaler == SCALER_LINEAR ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
+    SDL_Texture *tgt = NULL;   /* sharp-bilinear: integer-prescaled render target, drawn linearly to the window */
+    int tgt_w = 0, tgt_h = 0;
+    SDL_FRect scan_rects[ROTH_FB_MAXH];
     int edge_min = 24;                                  /* ROTH_AA_EDGE: minimum luma contrast treated as an edge */
     if (getenv("ROTH_AA_EDGE")) edge_min = atoi(getenv("ROTH_AA_EDGE"));
     const int aa_force_all = getenv("ROTH_AA_FORCE_RECT") != NULL;   /* dev/test: treat the whole frame as the 3D view */
@@ -263,7 +306,9 @@ int sdl_present_run(int scale, int filter)
      * the aspect_w/aspect_h juggling (design §2.7, §12): the texture stays cur_w x cur_h (full
      * detail) and is fit to the logical aspect rectangle, letterboxed to the window. 320x400
      * double-scan publishes aspect 320x200, so this shows a 4:3-ish image, not a tall portrait. */
-    SDL_SetRenderLogicalPresentation(ren, cur_log_w, cur_log_h, SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    SDL_SetRenderLogicalPresentation(ren, cur_log_w, cur_log_h,
+                                     cur_integer ? SDL_LOGICAL_PRESENTATION_INTEGER_SCALE : SDL_LOGICAL_PRESENTATION_LETTERBOX);
+    int cur_k = 1;   /* texture size multiple vs the published frame (2 for scale2x) */
 
     g_shm->viewer_alive = 1;
 
@@ -371,20 +416,26 @@ int sdl_present_run(int scale, int filter)
          * (likely an internal blit-map cache keyed off the texture, not re-derived per draw call) — so
          * force a full recreate on a filter change too, the same way a resolution change already does. */
         uint32_t fm = g_shm->filter_mode;
-        int want_filter = (fm & 1u) != 0;
+        int want_scaler = fm_scaler(fm);
+        int want_integer = (int)((fm >> 20) & 1u);
+        int scan_strength = (int)((fm >> 24) & 0xfu);
+        if (scan_strength > 8) scan_strength = 8;
+        int want_k = want_scaler == SCALER_SCALE2X ? 2 : 1;
         int edge_now = ((fm >> 8) & 0xffu) ? (int)((fm >> 8) & 0xffu) : edge_min;   /* live threshold from the flag word, else env/default */
-        if (w != cur_tex_w || h != cur_tex_h || want_filter != cur_filter) {
-            cur_filter = want_filter;
-            scale_mode = cur_filter ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
+        if (w != cur_tex_w || h != cur_tex_h || want_scaler != cur_scaler || want_k != cur_k) {
+            cur_scaler = want_scaler;
+            cur_k = want_k;
+            scale_mode = cur_scaler == SCALER_LINEAR ? SDL_SCALEMODE_LINEAR : SDL_SCALEMODE_NEAREST;
             SDL_DestroyTexture(tex);
             tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888,
-                                    SDL_TEXTUREACCESS_STREAMING, w, h);
+                                    SDL_TEXTUREACCESS_STREAMING, w * cur_k, h * cur_k);
             SDL_SetTextureScaleMode(tex, scale_mode);
             cur_tex_w = w; cur_tex_h = h;
         }
-        if (aw != cur_log_w || ah != cur_log_h) {
-            SDL_SetRenderLogicalPresentation(ren, aw, ah, SDL_LOGICAL_PRESENTATION_LETTERBOX);
-            cur_log_w = aw; cur_log_h = ah;
+        if (aw != cur_log_w || ah != cur_log_h || want_integer != cur_integer) {
+            SDL_SetRenderLogicalPresentation(ren, aw, ah,
+                want_integer ? SDL_LOGICAL_PRESENTATION_INTEGER_SCALE : SDL_LOGICAL_PRESENTATION_LETTERBOX);
+            cur_log_w = aw; cur_log_h = ah; cur_integer = want_integer;
         }
 
         /* palette (6-bit VGA DAC) -> ARGB8888, read under the seqlock-lite frame guard */
@@ -422,12 +473,41 @@ int sdl_present_run(int scale, int filter)
             }
         }
 
-        SDL_UpdateTexture(tex, NULL, rgb, w * 4);
+        if (cur_k == 2) {
+            scale2x_pass(g_scale2x_buf, rgb, w, h);
+            SDL_UpdateTexture(tex, NULL, g_scale2x_buf, w * 2 * 4);
+        } else {
+            SDL_UpdateTexture(tex, NULL, rgb, w * 4);
+        }
         SDL_RenderClear(ren);
-        SDL_RenderTexture(ren, tex, NULL, NULL);
+        SDL_FRect lrect = { 0, 0, 0, 0 };   /* where the image lands in window pixels (letterbox / integer scale) */
+        if (!SDL_GetRenderLogicalPresentationRect(ren, &lrect) || lrect.h <= 0) { lrect.h = (float)h; }
+        float out_scale = lrect.h / (float)h;                 /* window pixels per published row */
+        if (cur_scaler == SCALER_SHARP) {
+            /* nearest-prescale by an integer, then let the GPU filter that down: crisp texels, smooth edges */
+            int n = (int)out_scale + (out_scale > (float)(int)out_scale ? 1 : 0);
+            if (n < 1) n = 1;
+            if (n > 4) n = 4;
+            if (!tgt || tgt_w != w * n || tgt_h != h * n) {
+                if (tgt) SDL_DestroyTexture(tgt);
+                tgt = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, w * n, h * n);
+                if (tgt) SDL_SetTextureScaleMode(tgt, SDL_SCALEMODE_LINEAR);
+                tgt_w = w * n; tgt_h = h * n;
+            }
+            if (tgt && SDL_SetRenderTarget(ren, tgt)) {
+                SDL_RenderTexture(ren, tex, NULL, NULL);
+                SDL_SetRenderTarget(ren, NULL);
+                SDL_RenderTexture(ren, tgt, NULL, NULL);
+            } else {
+                SDL_SetRenderTarget(ren, NULL);
+                SDL_RenderTexture(ren, tex, NULL, NULL);
+            }
+        } else {
+            SDL_RenderTexture(ren, tex, NULL, NULL);
+        }
         int fvx = (int)g_shm->view_x, fvy = (int)g_shm->view_y, fvw = (int)g_shm->view_w, fvh = (int)g_shm->view_h;
         if (aa_force_all) { fvx = 0; fvy = 0; fvw = w; fvh = h; }      /* dev/test: whole frame counts as the view */
-        if (cur_filter && fvw > 0 && fvh > 0) {
+        if (cur_scaler != SCALER_NEAREST && fvw > 0 && fvh > 0) {
             /* Linear scaling softens the engine's subtitle / inspect text at the bottom of the 3D view. Redraw that
              * band (the bottom tenth of the view, the same strip the AA pass skips) from a nearest-neighbour twin
              * texture so the text stays crisp while the scene keeps the smooth scaling. */
@@ -451,6 +531,18 @@ int sdl_present_run(int scale, int filter)
                 }
             }
         }
+        if (scan_strength > 0 && out_scale >= 2.0f) {
+            /* scanlines: darken the lower half of every published row (logical coordinates); skipped below 2 window
+             * pixels per row where the lines would only alias. */
+            float rh = (float)ah / (float)h;
+            for (int y = 0; y < h; y++) {
+                scan_rects[y].x = 0; scan_rects[y].w = (float)aw;
+                scan_rects[y].y = ((float)y + 0.5f) * rh; scan_rects[y].h = rh * 0.5f;
+            }
+            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+            SDL_SetRenderDrawColor(ren, 0, 0, 0, (Uint8)(scan_strength * 20));
+            SDL_RenderFillRects(ren, scan_rects, h);
+        }
         if (shot_path && !shot_done && ++present_ct >= shot_at) {
             SDL_Surface *sh = SDL_RenderReadPixels(ren, NULL);
             if (sh && SDL_SaveBMP(sh, shot_path))
@@ -470,6 +562,7 @@ int sdl_present_run(int scale, int filter)
     sdl_audio_shutdown(); /* M2: stop + join the audio callback, close the synth, quit AUDIO subsystem */
     SDL_DestroyTexture(tex);
     if (tex_n) SDL_DestroyTexture(tex_n);
+    if (tgt) SDL_DestroyTexture(tgt);
     SDL_DestroyRenderer(ren);
     SDL_DestroyWindow(win);
     SDL_Quit();
