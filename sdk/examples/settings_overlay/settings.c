@@ -67,6 +67,7 @@
 #include <ctype.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -770,12 +771,12 @@ static void nav_key(uint8_t make)
     const row_t *rr = &g_rows[g_sel];
     switch (rr->kind) {
     case RK_YAW:
-        g_disp_yaw += dir * 0.1;
+        g_disp_yaw = floor((g_disp_yaw + dir * 0.01) * 100.0 + 0.5) / 100.0;
         if (g_disp_yaw < 0.01) g_disp_yaw = 0.01;
         if (g_disp_yaw > 20.0) g_disp_yaw = 20.0;
         g_mouselook_dirty = 1; break;
     case RK_PITCH:
-        g_disp_pitch += dir * 0.05;
+        g_disp_pitch = floor((g_disp_pitch + dir * 0.01) * 100.0 + 0.5) / 100.0;
         if (g_disp_pitch < 0.01) g_disp_pitch = 0.01;
         if (g_disp_pitch > 5.0) g_disp_pitch = 5.0;
         g_mouselook_dirty = 1; break;
