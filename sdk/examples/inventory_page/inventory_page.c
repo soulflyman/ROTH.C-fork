@@ -356,7 +356,12 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
 {
     uint8_t make = (uint8_t)(sc & 0x7f);
     int is_break = (sc & 0x80) != 0;
-    if (g_inspecting) return sc;
+    if (g_inspecting) {
+        /* Esc ends the popup deterministically: arm the engine's own exit latch (checked every frame by the popup's
+         * callback and by its modal loop) instead of relying on the key reaching the engine ring. */
+        if (!is_break && make == 0x01) api->game_ram->set_u32(VA_PANEL_OPEN + 8u, 1);
+        return sc;
+    }
     if (g_state == ST_CLOSED) {
         if (!is_break && make == (uint8_t)g_toggle_key && api->game_ram->u8(VA_PLAYER_MOVEMENT_ENABLED) == 1) {
             g_state = ST_OPEN; return 0;
@@ -471,15 +476,19 @@ static void examine(const struct roth_api_v1 *api, int id, uint32_t slotptr)
      * is set, and the cursor must be visible/absolute. Mirror that state for the duration, then restore it. */
     uint32_t save_panel = gr->u32(VA_PANEL_OPEN);
     uint8_t save_move = gr->u8(VA_PLAYER_MOVEMENT_ENABLED), save_rel = gr->u8(VA_MOUSE_REL_MODE);
+    fprintf(stderr, "[mods:_inventory] examine: label\n");
     api->engine->format_inventory_item_label((uint32_t)id, 0);   /* item name -> title (0x8105e) */
     gr->set_u8(VA_NAME_FLAG, 1);
     gr->set_u32(VA_PANEL_OPEN, 1);
     gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, 3);
     gr->set_u8(VA_MOUSE_REL_MODE, 0);
+    gr->set_u32(VA_PANEL_OPEN + 8u, 0);
+    fprintf(stderr, "[mods:_inventory] examine: calling the popup\n");
     g_inspecting = 1;
     uint32_t r = api->engine->load_dbase300_resource_at_offset((it->doc << 3) + 4u, it->loop, dbase + it->recoff, (uint32_t)(uintptr_t)hov);
     g_inspecting = 0;
     gr->set_u32(VA_PANEL_OPEN, save_panel);
+    gr->set_u32(VA_PANEL_OPEN + 8u, 0);
     gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, save_move);
     gr->set_u8(VA_MOUSE_REL_MODE, save_rel);
     fprintf(stderr, "[mods:_inventory] examine returned 0x%x active=%u\n", (unsigned)r, (unsigned)gr->u32(0x7fec0u));

@@ -31,3 +31,22 @@ re-armed 32 frames later and the texture reloads. Cases 3 and 4 keep the origina
 **Next step:** if flat textures still appear after the mitigation, grep the log for `[das]`.
 No `[das]` line means cases 3/4 (or a different cause); a line points to the cache-pressure path, and
 slot eviction in `renderer.c` (`reserve_das_cache_slot` / `evict_das_cache_slot`) is the place to look.
+
+### Update 2026-11-22 (evening): second occurrence, no `[das]` line
+
+The textures vanished again (chandelier, door texture) in a run that also froze when examining a book. No `[das]` line
+was logged, so the cache-full path (the only one instrumented at the time) is not the cause. Now every fallback exit logs
+once per texture index (`[das] texture N unavailable (<reason>)`) and a census line
+`[das] placeholder textures: A -> B (permanent-mark bits: M; first: ...)` is printed whenever the number of flat
+placeholders changes. Suspect to check first: the user's `keybinds.cfg` swaps `inventory` and `flush_textures`, so
+physical **I** triggers the engine's *flush textures* action (resets the whole DAS status table); pressing I out of habit
+to close the inventory/popup would flush the texture cache mid-play.
+
+## Examine popup hang (inventory_page)
+
+`examine id=17 ... loop=0` never returned in the user's run and closing the window did not end the process.
+Findings: headless, the popup for a non-looping record waits for Esc (engine callback `gdv_inspect_frame_callback`), and an
+injected Esc closes it and returns normally; ticks keep running. Note `roth-inject` cannot inject keys into the
+in-process (SDL) build any more (private shm) — use gdb (`set var g_shm->key_ring[...]`) to test input. Changes made:
+Esc now arms the engine's exit latch from the plugin's `on_scancode`; the main thread force-exits 3 s after the window
+closes if the game thread is wedged; `examine` logs its progress (`label` / `calling the popup`) to pinpoint a hang.

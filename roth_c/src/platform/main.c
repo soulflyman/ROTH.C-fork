@@ -620,8 +620,16 @@ int main(int argc, char **argv)
     if (g_shm) g_shm->filter_mode = (uint32_t)g_sdl_filter;   /* seed; a plugin may change it live afterward */
     sdl_present_run(g_sdl_scale, g_sdl_filter);
 
-    if (g_shm)
+    if (g_shm) {
         g_shm->quit = 1;   /* belt-and-suspenders: ask the game thread to exit if it hasn't */
+        /* A wedged game thread must never leave an unkillable process: give it ~3 s to leave cleanly. */
+        for (int i = 0; i < 150 && g_shm->host_alive; i++)
+            usleep(20000);
+        if (g_shm->host_alive) {
+            LOGE("game thread did not exit within 3 s of the window closing — forcing exit\n");
+            _exit(0);
+        }
+    }
     sys_join_game_thread();
     LOGE("game exited with code %d\n", g_exit_code);
     return g_exit_code;
