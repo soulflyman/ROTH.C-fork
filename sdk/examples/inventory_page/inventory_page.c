@@ -25,8 +25,8 @@
  * ACTIONS. Equip = the exact sequence the engine's number-key handler runs (SDK 0.7 exposed calls):
  * reset_weapon_fire_timing, activate_weapon_item(slot ptr, id), render_weapon_hud(1, attrs ptr).
  * EXAMINE = load_dbase300_resource_at_offset (SDK 0.9 slot 27), the modal popup the native inventory opens on Space.
- * It runs inside on_frame_game; while it does, the overlay is hidden and input passes through to the engine's
- * own popup loop. Items with no detail data (DBASE100 record +8 == 0) report NOTHING TO EXAMINE. No close-up icon yet.
+ * The item close-up icon comes from load_item_icon_resource (freed after). It runs inside on_frame_game; while it does, the overlay is hidden and input passes through to the engine's
+ * own popup loop. Items with no detail data (DBASE100 record +8 == 0) report NOTHING TO EXAMINE.
  * Runs from on_frame_game (GAME context); on_scancode (TICK_ISR) only sets flags.
  *
  * Env: ROTH_INVENTORY_TOGGLE_KEY, ROTH_INVENTORY_SCALE (font scale, default 1),
@@ -151,6 +151,8 @@ static const char *const BG_STYLE_NAMES[3] = { "SOLID", "SEE-THROUGH", "NONE" };
 #define VA_WEAPON_ATTRS     0x811b4u
 #define VA_PLAYER_MOVEMENT_ENABLED 0x7674au
 #define VA_DBASE100_BASE    0x81e1cu  /* runtime ptr to the loaded DBASE100 (record = base + file offset) */
+#define VA_DAS_CACHE_POOL   0x85c3cu  /* g_das_cache_heap_handle: runtime ptr to the DAS cache pool */
+#define VA_ARCHIVE_PATH     0x81f06u  /* item-icon archive file name (the engine opens it for icons) */
 #define VA_PANEL_ANCHOR_X   0x80b24u
 #define VA_PANEL_ANCHOR_Y   0x80b28u
 #define VA_SCREEN_PITCH     0x85498u
@@ -381,13 +383,20 @@ static void on_frame_game(const struct roth_api_v1 *api)
         /* the popup centres itself on these two panel-origin globals (compute_viewport_half_extents) */
         gr->set_u32(VA_PANEL_ANCHOR_Y, gr->u32(VA_SCREEN_HEIGHT) >> 1);
         gr->set_u32(VA_PANEL_ANCHOR_X, (gr->u32(VA_SCREEN_PITCH) - 0x130u) >> 1);
-        static uint32_t hov[3];   /* {close-up icon handle (none), carried slot ptr, item id} — game-side 12-byte entry */
+        static uint32_t hov[3];   /* {close-up icon handle, carried slot ptr, item id} — game-side 12-byte entry */
         hov[0] = 0;
+        uint32_t pool = gr->u32(VA_DAS_CACHE_POOL), arch = 0;
+        void *path = gr->to_ptr(VA_ARCHIVE_PATH);
+        if (pool && path && (arch = api->engine->dos_open_file((uint32_t)(uintptr_t)path, 0)) != 0) {
+            hov[0] = api->engine->load_item_icon_resource((uint32_t)id, arch);   /* close-up image; 0 = none */
+            api->engine->dos_close_handle(arch);
+        }
         hov[1] = (uint32_t)((uintptr_t)gr->to_ptr(VA_INV_ARRAY) + (uintptr_t)(req - 1) * 4u);
         hov[2] = (uint32_t)id;
         g_inspecting = 1;
         api->engine->load_dbase300_resource_at_offset((it->doc << 3) + 4u, it->loop, dbase + it->recoff, (uint32_t)(uintptr_t)hov);
         g_inspecting = 0;
+        if (hov[0]) api->engine->pool_free_handle((uint32_t *)(uintptr_t)pool, (uint32_t *)(uintptr_t)hov[0]);
         g_status[0] = '\0';
     }
 }
