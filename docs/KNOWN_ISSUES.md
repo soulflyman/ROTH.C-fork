@@ -15,7 +15,7 @@ The text below is the earlier investigation (kept for history).
 ## Textures occasionally turn into flat colour (open, cause unconfirmed)
 
 **Reported:** 2026-11-22 (two screenshots: half a tabletop; carpet and parts of a wall rendered as a single flat colour).
-**Reproduction:** none; appears rarely during normal play on branch `display-pipeline-overhaul`
+**Reproduction:** none; appears rarely during normal play on branch `modern-port-enhancements`
 (wide mode, hor-plus FOV). Not yet checked whether it also happens on `master`.
 
 **Mechanism.** `load_das_block_for_fat_index` (`roth_c/src/engine/das_assets.c`) falls back to a flat
