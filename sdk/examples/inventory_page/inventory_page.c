@@ -160,6 +160,7 @@ static const char *const BG_STYLE_NAMES[3] = { "SOLID", "SEE-THROUGH", "NONE" };
 #define VA_PANEL_OPEN       0x7fec4u  /* g_inventory_panel_open: the popup's modal loop ends as soon as this is 0 */
 #define VA_MOUSE_REL_MODE   0x7e8d0u
 #define VA_NAME_FLAG        0x8105cu  /* byte: "draw the item name" flag; the text lives at 0x8105e */
+#define VA_SCREEN_BUSY      0x7e8c8u  /* g_screen_busy_depth: while != 0 the tick never moves/draws the software cursor */
 #define VA_PANEL_ANCHOR_X   0x80b24u
 #define VA_PANEL_ANCHOR_Y   0x80b28u
 #define VA_SCREEN_PITCH     0x85498u
@@ -482,6 +483,12 @@ static void examine(const struct roth_api_v1 *api, int id, uint32_t slotptr)
     gr->set_u32(VA_PANEL_OPEN, 1);
     gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, 3);
     gr->set_u8(VA_MOUSE_REL_MODE, 0);
+    /* We are called from inside the game loop's mouse poll, possibly mid-frame with the screen "busy": the tick would
+     * then skip update_software_cursor for the whole popup (no cursor, mouse position frozen). The engine's own modal
+     * dialogs zero the depth the same way (menu_hud_ui.c). */
+    uint32_t save_busy = gr->u32(VA_SCREEN_BUSY);
+    fprintf(stderr, "[mods:_inventory] examine: screen busy depth %u\n", (unsigned)save_busy);
+    if (save_busy) gr->set_u32(VA_SCREEN_BUSY, 0);
     gr->set_u32(VA_PANEL_OPEN + 8u, 0);
     fprintf(stderr, "[mods:_inventory] examine: calling the popup\n");
     g_inspecting = 1;
@@ -491,6 +498,7 @@ static void examine(const struct roth_api_v1 *api, int id, uint32_t slotptr)
     gr->set_u32(VA_PANEL_OPEN + 8u, 0);
     gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, save_move);
     gr->set_u8(VA_MOUSE_REL_MODE, save_rel);
+    gr->set_u32(VA_SCREEN_BUSY, save_busy);
     fprintf(stderr, "[mods:_inventory] examine returned 0x%x active=%u\n", (unsigned)r, (unsigned)gr->u32(0x7fec0u));
     if (hov[0]) api->engine->pool_free_handle((uint32_t *)(uintptr_t)pool, (uint32_t *)(uintptr_t)hov[0]);
     g_status[0] = '\0';
