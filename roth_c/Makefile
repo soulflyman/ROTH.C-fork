@@ -312,6 +312,9 @@ viewer:
 # Install: copy the dist/ contents next to the ROTH game files (CONFIG.INI, ROTH.RES, DBASE*.DAT,
 # *.DAS) and run ./roth — with no args it uses the exe's own directory as the game dir.
 DIST := dist
+# first-party mods bundled into the release (sdk/examples/<name>/); built with the matching toolchain
+BUNDLED_MODS := settings_overlay mouselook inventory_page
+EXAMPLES := ../sdk/examples
 define DIST_README
 Realms of the Haunting — native host (image-free recompilation)
 ==============================================================
@@ -321,8 +324,10 @@ original content files (ROTH.RES, DBASE*.DAT, *.DAS, CONFIG.INI). No DOSBox, no
 original executable bytes.
 
 INSTALL
-  1. Copy everything in this folder (roth, libSDL3.so.0, gm.sf2, README_ROTHC.txt)
+  1. Copy everything in this folder (roth, libSDL3.so.0, gm.sf2, README_ROTHC.txt, mods/)
      into your ROTH game directory — the folder that contains CONFIG.INI and ROTH.RES.
+     The mods/ folder holds the bundled first-party mods (F11 settings menu, F7 mouselook,
+     single-page inventory); delete a mods/<name> folder to disable that mod.
   2. Run:  ./roth
      With no arguments it uses its own directory as the game directory and opens a
      window with video, input and audio. Close the window (or press the usual quit)
@@ -357,7 +362,12 @@ dist: roth
 	strip $(DIST)/libSDL3.so.0
 	cp $(PLATFORM)/viewer/gm.sf2 $(DIST)/gm.sf2
 	printf '%s\n' "$$DIST_README" > $(DIST)/README_ROTHC.txt
-	mkdir -p $(DIST)/mods   # drop plugin folders (mods/<name>/plugin.so) here at runtime
+	mkdir -p $(DIST)/mods   # drop further plugin folders (mods/<name>/plugin.so) here at runtime
+	for m in $(BUNDLED_MODS); do \
+	  $(MAKE) -C $(EXAMPLES)/$$m || exit 1; \
+	  mkdir -p $(DIST)/mods/$$m && cp $(EXAMPLES)/$$m/plugin.so $(DIST)/mods/$$m/ && \
+	  cp $(EXAMPLES)/$$m/*.cfg $(DIST)/mods/$$m/ 2>/dev/null || true; \
+	done
 	@echo "== dist/ built =="; ls -la $(DIST)
 	@echo "== dist/ ldd (libSDL3 must resolve to the bundled \$$ORIGIN copy) =="; \
 	 (cd $(DIST) && ldd ./roth | grep -i sdl3) || true
@@ -372,7 +382,7 @@ dist: roth
 #   gm.sf2         the General MIDI SoundFont (GeneralUser GS) — replaceable (see README_ROTHC.txt)
 #   README_ROTHC.txt  install + usage note. NOT README.txt — the game's install ships README.TXT
 #                  and Windows filenames are case-insensitive, so that name would overwrite it.
-#   mods/          empty; drop plugin folders (mods/<name>/plugin.dll) here at runtime
+#   mods/          the bundled first-party mods (mods/<name>/plugin.dll); drop further plugin folders here
 # Invoke on the CROSS axis: `make -C roth_c CROSS=mingw dist-win` (the guard below enforces it so
 # PRODUCT_BIN, STRIP and the moddable flavor resolve to their Windows values).
 DIST_WIN := dist-win
@@ -384,8 +394,10 @@ A single self-contained executable that plays the game from the original content
 files (ROTH.RES, DBASE*.DAT, *.DAS, CONFIG.INI). No DOSBox, no original executable.
 
 INSTALL
-  1. Copy everything in this folder (rothc.exe, SDL3.dll, gm.sf2, README_ROTHC.txt)
+  1. Copy everything in this folder (rothc.exe, SDL3.dll, gm.sf2, README_ROTHC.txt, mods/)
      into your ROTH game directory — the folder that contains CONFIG.INI and ROTH.RES.
+     The mods/ folder holds the bundled first-party mods (F11 settings menu, F7 mouselook,
+     single-page inventory); delete a mods/<name> folder to disable that mod.
   2. Run:  rothc.exe
      With no arguments it uses its own directory as the game directory and opens a
      window with video, input and audio. Close the window (or press the usual quit)
@@ -424,7 +436,12 @@ dist-win: _dist-win-guard $(PRODUCT_BIN)
 	cp third_party/sdl3-win32/bin/SDL3.dll $(DIST_WIN)/SDL3.dll
 	cp $(PLATFORM)/viewer/gm.sf2 $(DIST_WIN)/gm.sf2
 	printf '%s\n' "$$DIST_README_WIN" > $(DIST_WIN)/README_ROTHC.txt
-	mkdir -p $(DIST_WIN)/mods   # drop plugin folders (mods/<name>/plugin.dll) here at runtime
+	mkdir -p $(DIST_WIN)/mods   # drop further plugin folders (mods/<name>/plugin.dll) here at runtime
+	for m in $(BUNDLED_MODS); do \
+	  $(MAKE) -C $(EXAMPLES)/$$m CROSS=mingw || exit 1; \
+	  mkdir -p $(DIST_WIN)/mods/$$m && cp $(EXAMPLES)/$$m/plugin.dll $(DIST_WIN)/mods/$$m/ && \
+	  cp $(EXAMPLES)/$$m/*.cfg $(DIST_WIN)/mods/$$m/ 2>/dev/null || true; \
+	done
 	@echo "== dist-win/ built =="; ls -la $(DIST_WIN)
 
 ENGINE_HDRS := $(ENGINE)/engine.h $(ENGINE)/common.h $(ENGINE)/g_names.h

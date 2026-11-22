@@ -18,8 +18,8 @@ into your existing Realms of the Haunting installation folder and you can play.
 ## ![Playing banner](images/ROTH.C_playing_banner.png)
 
 1. Download the latest [Release](https://github.com/soulflyman/ROTH.C-fork/releases/latest) for your system (Windows or Linux).
-   - **Windows:** `rothc.exe` (the engine), `SDL3.dll`, `gm.sf2` (soundfont), and an empty `mods/` folder.
-   - **Linux:** `roth` (the engine), `libSDL3.so.0`, `gm.sf2` (soundfont), and an empty `mods/` folder.
+   - **Windows:** `rothc.exe` (the engine), `SDL3.dll`, `gm.sf2` (soundfont), and a `mods/` folder with the first-party mods.
+   - **Linux:** `roth` (the engine), `libSDL3.so.0`, `gm.sf2` (soundfont), and a `mods/` folder with the first-party mods.
 2. Extract everything into your installation's `ROTH` directory. (this is the one containing `CONFIG.INI` and
    the game's data files, which is `"Realms of the Haunting/ROTH/"` in the Steam version).
 3. Double click `rothc.exe` (for Windows) or `roth` (for Linux). You can also run either from the commandline for logging.
@@ -39,16 +39,20 @@ This fork adds display options, focus handling and a few quality-of-life mods on
 is available from the command line; the in-game menus come from first-party example mods that you build and
 install yourself.
 
-1. **Get the binary.** Build it from source (see "Building from source" below) and copy
-   the contents of `roth_c/dist/` (the `roth` binary, `libSDL3.so.0`, `gm.sf2`) into your game's `ROTH` directory.
-2. **Build and install the mods you want.** Each example builds with `make` in its directory (needs `gcc` with 32-bit
-   support) and is installed as `<game>/mods/<name>/plugin.so`; see [`sdk/examples/README.md`](sdk/examples/README.md):
+1. **Get the binary.** Download a release (or build it: see "Building from source" below; `make -C roth_c dist` /
+   `make -C roth_c CROSS=mingw dist-win`) and copy the contents of the bundle into your game's `ROTH` directory.
+2. **The first-party mods are already in the bundle** (`mods/settings_overlay`, `mods/mouselook`, `mods/inventory_page`) and
+   load automatically; delete a folder from `mods/` to disable that mod, or start with `--no-mods` for none:
 
    | mod                | gives you                                                                                       |
    | ------------------ | ----------------------------------------------------------------------------------------------- |
    | `settings_overlay` | the **F11** settings menu: resolution, upscaler, scanlines, CRT look, anti-aliasing, window mode, head-bob, pause on focus loss, mouselook yaw/pitch, key bindings. Settings persist in `mods/_settings.cfg` |
-   | `mouselook`        | mouse look; **F7** toggles freelook (copy its `mouselook.cfg` along with `plugin.so`)            |
+   | `mouselook`        | mouse look; **F7** toggles freelook (configured in `mods/mouselook/mouselook.cfg`)               |
    | `inventory_page`   | a single-page inventory overlay opened with the engine's inventory key, with list/tile views and an examine popup (Space) |
+
+   The bundle build compiles them from `sdk/examples/`; to build a single mod yourself, run `make` in its directory
+   (needs `gcc` with 32-bit support) and install it as `<game>/mods/<name>/plugin.so`, see
+   [`sdk/examples/README.md`](sdk/examples/README.md).
 
 3. **Or skip the menus** and use command-line switches / environment variables (`--filter`, `--scanlines`, `--crt`,
    `--window-mode`, `--aa`, `--head-bob`, `--pause-on-focus-loss`, ...). The full table is in
