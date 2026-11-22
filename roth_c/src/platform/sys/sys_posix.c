@@ -18,6 +18,8 @@
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <unistd.h>
+#include <ucontext.h>
+#include <stdint.h>
 
 void sys_tick_start(unsigned period_us)
 {
@@ -82,6 +84,47 @@ int sys_spawn_game_thread(void *(*fn)(void *), void *arg, size_t stack_bytes)
 void sys_join_game_thread(void)
 {
     pthread_join(g_game_tid, NULL);
+}
+
+extern char __executable_start, etext;
+
+static void hexline(const char *tag, uint32_t v)
+{
+    char buf[32]; int n = 0;
+    while (*tag) buf[n++] = *tag++;
+    for (int sh = 28; sh >= 0; sh -= 4) buf[n++] = "0123456789abcdef"[(v >> sh) & 15];
+    buf[n++] = '\n';
+    if (write(2, buf, (size_t)n) < 0) return;
+}
+
+/* No unwinder (the game's frames are not all described): print EIP and every stack word that points into our text. */
+static void game_stack_handler(int sig, siginfo_t *si, void *ucv)
+{
+    (void)sig; (void)si;
+    ucontext_t *uc = (ucontext_t *)ucv;
+    uint32_t eip = (uint32_t)uc->uc_mcontext.gregs[REG_EIP];
+    uint32_t esp = (uint32_t)uc->uc_mcontext.gregs[REG_ESP];
+    hexline("  eip ", eip);
+    const uint32_t lo = (uint32_t)(uintptr_t)&__executable_start, hi = (uint32_t)(uintptr_t)&etext;
+    int shown = 0;
+    for (uint32_t i = 0; i < 512 && shown < 40; i++) {
+        uint32_t w = ((const uint32_t *)(uintptr_t)esp)[i];
+        if (w >= lo && w < hi) { hexline("  ret ", w); shown++; }
+    }
+}
+
+void sys_dump_game_thread_stack(void)
+{
+    if (!g_game_tid) return;   /* --headless runs the game on the main thread: nothing to signal */
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = game_stack_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESTART;
+    sigaction(SIGVTALRM, &sa, NULL);
+    static const char m[] = "[watchdog] game thread stack (raw addresses; resolve with addr2line -f -e roth):\n";
+    if (write(2, m, sizeof m - 1) < 0) return;
+    pthread_kill(g_game_tid, SIGVTALRM);
+    usleep(300000);
 }
 
 void sys_game_thread_enter(void)

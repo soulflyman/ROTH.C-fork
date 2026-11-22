@@ -64,6 +64,8 @@ int sys_spawn_game_thread(void *(*fn)(void *), void *arg, size_t stack_bytes)
     return 0;
 }
 
+void sys_dump_game_thread_stack(void) {}
+
 void sys_join_game_thread(void)
 {
     if (g_game_thread)

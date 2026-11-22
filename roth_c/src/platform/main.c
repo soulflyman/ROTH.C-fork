@@ -627,6 +627,7 @@ int main(int argc, char **argv)
             usleep(20000);
         if (g_shm->host_alive) {
             LOGE("game thread did not exit within 3 s of the window closing — forcing exit\n");
+            sys_dump_game_thread_stack();
             _exit(0);
         }
     }

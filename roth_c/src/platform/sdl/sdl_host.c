@@ -21,6 +21,7 @@
 #ifdef ROTH_STANDALONE
 
 #include <SDL3/SDL.h>
+#include "../sys/sys.h"
 #include "shared_fb.h"
 #include "sdl/sdl_audio.h"   /* M2: the in-process SDL3 audio consumer (PCM ring + MIDI->TSF) */
 
@@ -289,7 +290,15 @@ int sdl_present_run(int scale, int filter)
 
     static uint32_t rgb[ROTH_FB_MAX]; /* fits hi-res (640x480) */
     int running = 1;
+    uint32_t wd_frame = g_shm->frame; Uint64 wd_since = SDL_GetTicks(); int wd_fired = 0;
     while (running && g_shm->host_alive) {
+        /* watchdog: the game tick (shm frame counter) stopped for 4 s -> make the game thread print its stack once */
+        if (g_shm->frame != wd_frame) { wd_frame = g_shm->frame; wd_since = SDL_GetTicks(); wd_fired = 0; }
+        else if (!wd_fired && wd_frame != 0 && SDL_GetTicks() - wd_since > 4000) {
+            wd_fired = 1;
+            fprintf(stderr, "[watchdog] the game tick has stalled for 4 s\n");
+            sys_dump_game_thread_stack();
+        }
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             switch (e.type) {

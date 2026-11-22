@@ -496,11 +496,29 @@ static void examine(const struct roth_api_v1 *api, int id, uint32_t slotptr)
     g_status[0] = '\0';
 }
 
+static void dev_auto(const struct roth_api_v1 *api)
+{
+    static int auto_id = -1, frames;      /* dev: ROTH_INVENTORY_AUTO_INSPECT=<id> examines once at boot (headless repro) */
+    if (auto_id == -1) auto_id = getenv("ROTH_INVENTORY_AUTO_INSPECT") ? atoi(getenv("ROTH_INVENTORY_AUTO_INSPECT")) : 0;
+    if (auto_id > 0 && getenv("ROTH_INVENTORY_AUTO_TRIGGER")) {   /* dev: examine when this file appears (then remove it) */
+        const char *tf = getenv("ROTH_INVENTORY_AUTO_TRIGGER");
+        FILE *f = fopen(tf, "r");
+        if (f) { fclose(f); remove(tf); fprintf(stderr, "[mods:_inventory] auto-inspect (trigger file) id %d\n", auto_id); examine(api, auto_id, 0);
+                 fprintf(stderr, "[mods:_inventory] auto-inspect returned\n"); }
+    } else
+    if (auto_id > 0 && ++frames == (getenv("ROTH_INVENTORY_AUTO_FRAME") ? atoi(getenv("ROTH_INVENTORY_AUTO_FRAME")) : 150)) {
+        fprintf(stderr, "[mods:_inventory] auto-inspect id %d\n", auto_id);
+        examine(api, auto_id, 0);
+        fprintf(stderr, "[mods:_inventory] auto-inspect returned\n");
+    }
+}
+
 static void on_frame_game(const struct roth_api_v1 *api)
 {
     const struct roth_game_ram_api_v1 *gr = api->game_ram;
     static int was_open;
     if (g_inspecting) return;   /* re-entered from the popup's own mouse polls: the engine owns the screen */
+    dev_auto(api);
     if (g_state != ST_CLOSED && !getenv("ROTH_INVENTORY_FORCE_OPEN") &&
         gr->u8(VA_PLAYER_MOVEMENT_ENABLED) != 1) g_state = ST_CLOSED;
     if (g_state == ST_CLOSED) { was_open = 0; return; }
@@ -530,13 +548,6 @@ static void on_frame_game(const struct roth_api_v1 *api)
         g_inspect_request = 0;
         int id = (int16_t)gr->u16(VA_INV_ARRAY + (uint32_t)(req - 1) * 4u);
         examine(api, id, (uint32_t)((uintptr_t)gr->to_ptr(VA_INV_ARRAY) + (uintptr_t)(req - 1) * 4u));
-    }
-    static int auto_id = -1, frames;      /* dev: ROTH_INVENTORY_AUTO_INSPECT=<id> examines once at boot (headless repro) */
-    if (auto_id == -1) auto_id = getenv("ROTH_INVENTORY_AUTO_INSPECT") ? atoi(getenv("ROTH_INVENTORY_AUTO_INSPECT")) : 0;
-    if (auto_id > 0 && ++frames == (getenv("ROTH_INVENTORY_AUTO_FRAME") ? atoi(getenv("ROTH_INVENTORY_AUTO_FRAME")) : 150)) {
-        fprintf(stderr, "[mods:_inventory] auto-inspect id %d\n", auto_id);
-        examine(api, auto_id, 0);
-        fprintf(stderr, "[mods:_inventory] auto-inspect returned\n");
     }
 }
 

@@ -49,6 +49,8 @@ void sys_tick_stop(void);
  * sys_join_game_thread blocks until that thread returns. */
 int  sys_spawn_game_thread(void *(*fn)(void *), void *arg, size_t stack_bytes);
 void sys_join_game_thread(void);
+/* Diagnostics: make the game thread print its stack (raw addresses) to stderr; no-op where unsupported. */
+void sys_dump_game_thread_stack(void);
 
 /* Called once at the very top of the game thread, before it enters the game.
  * Where the tick is delivered as an asynchronous per-thread event this arms that

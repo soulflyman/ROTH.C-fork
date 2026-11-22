@@ -1637,6 +1637,11 @@ static int iso_apply_scancode(uint8_t sc)
  * input from the viewer. Runs in the timer handler (host segments active). */
 static void shm_tick(void)
 {
+    {   /* dev: ROTH_WATCHDOG_SELFTEST=<ticks> wedges the tick handler to exercise the stall watchdog */
+        static int st_at = -2;
+        if (st_at == -2) st_at = getenv("ROTH_WATCHDOG_SELFTEST") ? atoi(getenv("ROTH_WATCHDOG_SELFTEST")) : -1;
+        if (st_at > 0 && g_shm && g_shm->frame > (uint32_t)st_at) for (;;) { }
+    }
     audio_tick(); /* diagnostic: is the SOS mixer rendering PCM? */
 #ifdef ROTH_STANDALONE
     /* Image-free digital-audio pump (audio.c): the MAGIC_POLL body — SFX/speech mixer + done-cb
