@@ -844,6 +844,7 @@ L17be6:
     G8(VA_g_player_movement_enabled) = 1;                               /* g_player_movement_enabled = 1 (gameplay) */
 
 L17c16:                                            /* --- INNER (per-frame) LOOP TOP --- */
+    if (g_game_loop_hook) g_game_loop_hook();      /* host seam (plugins' on_frame_game): every mode, game thread, between frames */
     gc_call(&r, 0x156bd);                          /* service_audio_sequence */
     gc_call(&r, 0x1e9b5);                          /* voice_stream_pump */
     r.edi += (uint32_t)G32(VA_g_frame_time_scale);               /* add edi,[0x85324] (frame-time accum) */
@@ -1179,6 +1180,8 @@ void roth_game_startup(void)
 report:
     r.eax = 0; gc_call(&r, 0x41674);               /* restore_exception_handler_and_report(0) */
 }
+
+void (*g_game_loop_hook)(void);
 
 /* ============================================================ Layer 6 — program entry */
 

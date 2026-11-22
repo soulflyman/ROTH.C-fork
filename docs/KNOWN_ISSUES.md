@@ -71,3 +71,11 @@ tick heartbeat polls the mouse for the software cursor, and `frame_pump` ran the
 the SIGALRM handler*. A modal popup in the handler waits for ticks that cannot arrive while the handler runs: deadlock, process
 unkillable. Fix: `frame_relay` skips `frame_pump` while `roth_in_tick_isr()`; `on_frame_game` now runs only from the game loop's own
 mouse polls. (Also removes a class of engine calls racing the game thread from signal context.)
+
+### Overlay pause broke the overlays (2026-11-23) — fixed
+
+Parking the game in movement mode 2 while an overlay is open stopped the gameplay frame step, and with it the mouse polls that
+fired `on_frame_game` (since c48b0d5 only game-thread polls do): the overlays could no longer close or run their frame-side work.
+`on_frame_game` is now driven from the top of the main game loop (`g_game_loop_hook` in `roth_main_sequence`, every mode), with
+the old mouse-poll path kept only as a fallback outside that loop (menus, cutscenes). The log prints
+`[plugins] on_frame_game is now driven from the game loop` once the loop runs.

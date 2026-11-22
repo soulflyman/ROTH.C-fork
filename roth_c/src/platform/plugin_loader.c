@@ -479,6 +479,25 @@ static void dispatch_mouse_poll(uint16_t ax_in, regs_t *io)
     if (any) { io->ebx = mp.ebx; io->ecx = mp.ecx; io->edx = mp.edx; }
 }
 
+static uint16_t g_loop_pump_tick;     /* engine tick of the last game-loop pump (0x90bcc) */
+static int      g_loop_pump_seen;
+
+/* The main game loop (roth_main_sequence) calls this at the top of every iteration in every mode — the clean GAME context:
+ * game thread, between frames. It keeps running while a plugin parks the game in an inert mode (overlay pause), unlike the
+ * mouse polls the gameplay frame step makes. */
+static void loop_pump(void)
+{
+    g_loop_pump_tick = *(volatile uint16_t *)(uintptr_t)(0x90bccu + OBJ_DELTA);
+    if (!g_loop_pump_seen) { g_loop_pump_seen = 1; LOGE("[plugins] on_frame_game is now driven from the game loop\n"); }
+    frame_pump();
+}
+
+static int loop_pump_recent(void)
+{
+    uint16_t now = *(volatile uint16_t *)(uintptr_t)(0x90bccu + OBJ_DELTA);
+    return g_loop_pump_seen && (uint16_t)(now - g_loop_pump_tick) < 140;
+}
+
 static uint32_t frame_relay(uint8_t vec, regs_t *io)
 {
     uint16_t ax_in = (uint16_t)io->eax;         /* int33 subfunction, captured before the call runs */
@@ -490,8 +509,8 @@ static uint32_t frame_relay(uint8_t vec, regs_t *io)
          * blocking modal UI, are legal), so it must never run in tick context: a modal popup there waits for ticks
          * that cannot arrive while the tick handler is still running (hang, process unkillable). Skip it; the game
          * loop's own mouse poll fires it. */
-        if (!roth_in_tick_isr())
-            frame_pump();                       /* on_frame_game(GAME): deduped on the 0x90bcc tick */
+        if (!roth_in_tick_isr() && !loop_pump_recent())
+            frame_pump();                       /* fallback outside the main game loop (menus, cutscenes) */
     }
     return r;
 }
@@ -515,6 +534,7 @@ static void install_frame_seam(void)
     g_inner_soft_int = g_os_soft_int;           /* host_soft_int, bound by boot.c step 4 */
     g_os_soft_int    = frame_relay;
     g_frame_seam_installed = 1;
+    g_game_loop_hook = loop_pump;
     g_last_frame_tick = *(volatile uint16_t *)(uintptr_t)(0x90bccu + OBJ_DELTA);   /* prime */
     LOGE("[plugins] int33 seam installed (on_frame_game deduped on the 0x90bcc engine tick; on_mouse_poll per poll)\n");
 }

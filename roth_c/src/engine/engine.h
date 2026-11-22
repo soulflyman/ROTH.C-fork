@@ -55,6 +55,8 @@ void call_orig_far(uint32_t va);
  * and the return value is EFLAGS (CF = bit 0). NULL in the oracle (the inline-interrupt lifts that use
  * it are live-swap-only and never oracled). Wired to host_soft_int in lift_registry.c install. */
 extern uint32_t (*g_os_soft_int)(uint8_t vec, regs_t *io);
+/* Host seam: called once per iteration at the top of the main game loop (roth_main_sequence), in every mode, on the game thread. */
+extern void (*g_game_loop_hook)(void);
 
 /* Host hook: drive an `out dx,al` byte port write from a lift, against the host's port emulation (the
  * same path the trap dispatch runs for the original's `out` instruction). Used by the GDV codec's
