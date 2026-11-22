@@ -4,6 +4,7 @@
  *   make            # -> plugin.so
  *   cp plugin.so <game>/mods/_inventory/plugin.so
  *
+ * PAUSE: while open the game is parked in movement mode 2 (inert in the main loop), restored to 1 on close.
  * Toggle: F12 (ROTH_INVENTORY_TOGGLE_KEY=0xNN overrides), only during normal gameplay.
  * Keys while open: Up/Down move (the movement keys, e.g. W/S/A/D, work as arrows too), Left/Right jump a column, PgUp/PgDn page, Enter equips the
  * selected weapon, Space (EXAMINE KEY setting) opens the engine's own item detail view, Esc or the toggle key closes. Every other key is swallowed.
@@ -381,6 +382,7 @@ static uint8_t nav_translate(uint8_t make)
     return make;
 }
 
+static int g_paused;                                      /* we parked the game in movement mode 2 */
 static volatile uint8_t g_swallowed[128];   /* makes we swallowed: their break is swallowed too, every other break passes */
 
 static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
@@ -570,9 +572,20 @@ static void on_frame_game(const struct roth_api_v1 *api)
     if (g_inspecting) return;   /* re-entered from the popup's own mouse polls: the engine owns the screen */
     dev_auto(api);
     refresh_nav_keys(api->game_ram);
-    if (g_state != ST_CLOSED && !getenv("ROTH_INVENTORY_FORCE_OPEN") &&
-        gr->u8(VA_PLAYER_MOVEMENT_ENABLED) != 1) g_state = ST_CLOSED;
-    if (g_state == ST_CLOSED) { was_open = 0; return; }
+    /* PAUSE: like the native inventory, the world stands still while the overlay is open. The engine's main loop only
+     * simulates in mode 1 (g_player_movement_enabled); mode 2 is an inert state (no frame step, no input dispatch), so the
+     * overlay parks the game there and puts it back to 1 on close — unless something else changed the mode meanwhile. */
+    {
+        uint8_t mv = gr->u8(VA_PLAYER_MOVEMENT_ENABLED);
+        if (g_state != ST_CLOSED && !getenv("ROTH_INVENTORY_FORCE_OPEN")) {
+            if (mv == 1 && !g_paused) { gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, 2); g_paused = 1; }
+            else if (mv != (g_paused ? 2 : 1)) { g_state = ST_CLOSED; g_paused = 0; }   /* the game left gameplay (menu, death, load) */
+        }
+        if (g_state == ST_CLOSED) {
+            if (g_paused) { if (mv == 2) gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, 1); g_paused = 0; }
+            was_open = 0; return;
+        }
+    }
     if (!was_open) { g_sel = 0; g_status[0] = '\0'; was_open = 1; }
     rebuild_list(api);
 
