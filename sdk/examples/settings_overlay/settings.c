@@ -66,6 +66,7 @@
  */
 #include <ctype.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -478,6 +479,14 @@ static void apply_display_flags(void)
     if (!g_api) return;
     g_api->set_display_filter((uint32_t)((g_set_linear == 1 ? 1 : 0) | (g_set_aa ? 2 : 0) | ((g_set_aa_thr & 0xff) << 8) |
                                          ((g_set_linear & 0xf) << 16) | ((g_set_integer ? 1 : 0) << 20) | ((g_set_scan & 0xf) << 24) | ((g_set_crt & 0x3) << 28) | ((uint32_t)(g_set_wmode & 0x3) << 30)));
+}
+
+/* set_display_preview arrived with SDK 0.12: on an older host the table is shorter and the preview is simply absent. */
+static void preview_set(const struct roth_api_v1 *api, uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    if (api->struct_size >= offsetof(struct roth_api_v1, set_display_preview) + sizeof api->set_display_preview &&
+        api->set_display_preview)
+        api->set_display_preview(x, y, w, h);
 }
 
 static uint8_t g_action_sc[64]; /* current scancode per action, refreshed from game_ram on open */
@@ -1122,7 +1131,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
     }
     static int pv_on;
     if (!g_overlay_open || !pixels) {
-        if (pv_on) { api->set_display_preview(0, 0, 0, 0); pv_on = 0; }   /* menu closed: drop the preview rectangle */
+        if (pv_on) { preview_set(api, 0, 0, 0, 0); pv_on = 0; }   /* menu closed: drop the preview rectangle */
         return;
     }
     if (g_gray_bg) gray_view(api, pixels, width, height);
@@ -1151,10 +1160,10 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
         if (pw >= 120 && py + ph + 4 < by + bh - 16) {
             draw_string(pixels, width, height, px, list_y, "PREVIEW", COL_TEXT, 1);
             draw_border(pixels, width, height, px - 2, py - 2, pw + 4, ph + 4, 1, COL_BORDER);
-            api->set_display_preview((uint32_t)px, (uint32_t)py, (uint32_t)pw, (uint32_t)ph);
+            preview_set(api, (uint32_t)px, (uint32_t)py, (uint32_t)pw, (uint32_t)ph);
             pv_on = 1;
         } else if (pv_on) {
-            api->set_display_preview(0, 0, 0, 0);
+            preview_set(api, 0, 0, 0, 0);
             pv_on = 0;
         }
     }
@@ -1259,7 +1268,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
 
 static const struct roth_plugin_info_v1 SETTINGS = {
     .abi_major     = ROTH_ABI_MAJOR,
-    .abi_minor     = ROTH_ABI_MINOR,
+    .abi_minor     = 11,   /* lowest host this menu runs on; set_display_preview (0.12) is optional, see preview_set */
     .struct_size   = sizeof(struct roth_plugin_info_v1),
     .id            = "ire.roth.settings",
     .name          = "Menu (settings overlay: live mouselook, keybinds, display)",
