@@ -325,7 +325,7 @@ int sdl_present_run(int scale, int filter)
     SDL_Texture *tgt = NULL;   /* sharp-bilinear: integer-prescaled render target, drawn linearly to the window */
     int tgt_w = 0, tgt_h = 0;
     SDL_FRect scan_rects[ROTH_FB_MAXH];
-    SDL_FRect mask_rects[ROTH_FB_MAXW];
+    SDL_FRect mask_rects[512];
     int edge_min = 24;                                  /* ROTH_AA_EDGE: minimum luma contrast treated as an edge */
     if (getenv("ROTH_AA_EDGE")) edge_min = atoi(getenv("ROTH_AA_EDGE"));
     const int aa_force_all = getenv("ROTH_AA_FORCE_RECT") != NULL;   /* dev/test: treat the whole frame as the 3D view */
@@ -636,41 +636,47 @@ int sdl_present_run(int scale, int filter)
                 }
             }
         }
-        if (scan_strength > 0 && out_scale >= 2.0f) {
-            /* scanlines: darken the lower half of every published row (logical coordinates); skipped below 2 window
-             * pixels per row where the lines would only alias. */
-            float rh = (float)ah / (float)h;
-            for (int y = 0; y < h; y++) {
-                scan_rects[y].x = 0; scan_rects[y].w = (float)aw;
-                scan_rects[y].y = ((float)y + 0.5f) * rh; scan_rects[y].h = rh * 0.5f;
-            }
+        if ((scan_strength > 0 || crt > 0) && lrect.w > 0 && lrect.h > 0) {
+            /* CRT effects are drawn in DEVICE pixels (logical presentation off): every line boundary is rounded to a whole window
+             * pixel, so thickness and pitch stay regular at any window scale (fractional coordinates gave an uneven, moire-like rhythm). */
+            SDL_SetRenderLogicalPresentation(ren, 0, 0, SDL_LOGICAL_PRESENTATION_DISABLED);
             SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(ren, 0, 0, 0, (Uint8)(scan_strength * 20));
-            SDL_RenderFillRects(ren, scan_rects, h);
-        }
-        if (crt > 0) {
-            float a_mask = crt == 1 ? 40.f : 80.f, a_vig = crt == 1 ? 110.f : 190.f;
-            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-            if (out_scale >= 2.0f) {      /* aperture-grille: darken the right third of every source column */
-                float cw = (float)aw / (float)w;
-                for (int x = 0; x < w; x++) {
-                    mask_rects[x].x = ((float)x + 0.66f) * cw; mask_rects[x].w = cw * 0.34f;
-                    mask_rects[x].y = 0; mask_rects[x].h = (float)ah;
+            float ox = lrect.x, oy = lrect.y, lw = lrect.w, lh = lrect.h, sy = lh / (float)h;
+            int a_scan = scan_strength * 20;
+            if (crt == 1 && a_scan < 60) a_scan = 60;
+            if (crt == 2 && a_scan < 110) a_scan = 110;
+            if (a_scan > 0 && sy >= 2.0f) {           /* horizontal scanlines: the lower third of every source row */
+                for (int y = 0; y < h; y++) {
+                    float y0 = (float)(int)(oy + (float)y * sy + 0.5f), y1 = (float)(int)(oy + (float)(y + 1) * sy + 0.5f);
+                    float dark = (float)(int)((y1 - y0) / 3.0f); if (dark < 1.0f) dark = 1.0f;
+                    scan_rects[y].x = ox; scan_rects[y].w = lw; scan_rects[y].y = y1 - dark; scan_rects[y].h = dark;
                 }
-                SDL_SetRenderDrawColor(ren, 0, 0, 0, (Uint8)a_mask);
-                SDL_RenderFillRects(ren, mask_rects, w);
+                SDL_SetRenderDrawColor(ren, 0, 0, 0, (Uint8)(a_scan > 255 ? 255 : a_scan));
+                SDL_RenderFillRects(ren, scan_rects, h);
             }
-            /* vignette: four edge quads fading from a_vig alpha at the border to 0 */
-            float bw = (float)aw * 0.14f, bh = (float)ah * 0.14f, W = (float)aw, H = (float)ah;
-            SDL_FColor c0 = { 0, 0, 0, a_vig / 255.f }, c1 = { 0, 0, 0, 0 };
-            SDL_Vertex v[16] = {
-                { {0, 0}, c0, {0, 0} }, { {W, 0}, c0, {0, 0} }, { {W - bw, bh}, c1, {0, 0} }, { {bw, bh}, c1, {0, 0} },       /* top */
-                { {0, H}, c0, {0, 0} }, { {W, H}, c0, {0, 0} }, { {W - bw, H - bh}, c1, {0, 0} }, { {bw, H - bh}, c1, {0, 0} }, /* bottom */
-                { {0, 0}, c0, {0, 0} }, { {0, H}, c0, {0, 0} }, { {bw, H - bh}, c1, {0, 0} }, { {bw, bh}, c1, {0, 0} },       /* left */
-                { {W, 0}, c0, {0, 0} }, { {W, H}, c0, {0, 0} }, { {W - bw, H - bh}, c1, {0, 0} }, { {W - bw, bh}, c1, {0, 0} } /* right */
-            };
-            static const int idx[24] = { 0,1,2, 0,2,3,  4,5,6, 4,6,7,  8,9,10, 8,10,11,  12,13,14, 12,14,15 };
-            SDL_RenderGeometry(ren, NULL, v, 16, idx, 24);
+            if (crt == 2 && sy >= 4.0f) {             /* fine RGB-style mask: every third device column, only where it cannot alias */
+                int cols = (int)(lw / 3.0f), n = 0;
+                SDL_SetRenderDrawColor(ren, 0, 0, 0, 45);
+                for (int c = 0; c < cols; c++) {
+                    mask_rects[n].x = ox + (float)(c * 3 + 2); mask_rects[n].w = 1.0f; mask_rects[n].y = oy; mask_rects[n].h = lh;
+                    if (++n == (int)(sizeof mask_rects / sizeof mask_rects[0]) || c == cols - 1) { SDL_RenderFillRects(ren, mask_rects, n); n = 0; }
+                }
+            }
+            if (crt > 0) {                            /* vignette: four edge quads fading from a_vig alpha at the border to 0 */
+                float a_vig = crt == 1 ? 90.f : 150.f;
+                float bw = lw * 0.12f, bh = lh * 0.12f, X = ox, Y = oy, W = ox + lw, H = oy + lh;
+                SDL_FColor c0 = { 0, 0, 0, a_vig / 255.f }, c1 = { 0, 0, 0, 0 };
+                SDL_Vertex v[16] = {
+                    { {X, Y}, c0, {0, 0} }, { {W, Y}, c0, {0, 0} }, { {W - bw, Y + bh}, c1, {0, 0} }, { {X + bw, Y + bh}, c1, {0, 0} },   /* top */
+                    { {X, H}, c0, {0, 0} }, { {W, H}, c0, {0, 0} }, { {W - bw, H - bh}, c1, {0, 0} }, { {X + bw, H - bh}, c1, {0, 0} },   /* bottom */
+                    { {X, Y}, c0, {0, 0} }, { {X, H}, c0, {0, 0} }, { {X + bw, H - bh}, c1, {0, 0} }, { {X + bw, Y + bh}, c1, {0, 0} },   /* left */
+                    { {W, Y}, c0, {0, 0} }, { {W, H}, c0, {0, 0} }, { {W - bw, H - bh}, c1, {0, 0} }, { {W - bw, Y + bh}, c1, {0, 0} }    /* right */
+                };
+                static const int idx[24] = { 0,1,2, 0,2,3,  4,5,6, 4,6,7,  8,9,10, 8,10,11,  12,13,14, 12,14,15 };
+                SDL_RenderGeometry(ren, NULL, v, 16, idx, 24);
+            }
+            SDL_SetRenderLogicalPresentation(ren, cur_log_w, cur_log_h,
+                                             cur_integer ? SDL_LOGICAL_PRESENTATION_INTEGER_SCALE : SDL_LOGICAL_PRESENTATION_LETTERBOX);
         }
         if (shot_path && !shot_done && ++present_ct >= shot_at) {
             SDL_Surface *sh = SDL_RenderReadPixels(ren, NULL);
