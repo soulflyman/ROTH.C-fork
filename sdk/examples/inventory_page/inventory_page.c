@@ -18,7 +18,11 @@
  * Categories (tools/dump_items.py): 0 items, 1 weapons+magazines, 2 dialogue topics, 3 artifacts,
  * 4 documents. Shown in the native tab order 0,1,3,4,2.
  *
- * KNOWN LIMITS (v1): text only (no icons); the engine hides a topic (category 2) whose dialogue node
+ * VIEW setting (F11): LIST (default) or TILES — the item icons from DBASE200 as a grid, names optional underneath.
+ * Icons are decoded by the engine (load_item_icon_resource + blit_item_icon) into mod-owned buffers in
+ * on_frame_game, a few per frame, and drawn from compose. List view is text only.
+ *
+ * KNOWN LIMITS (v1): the engine hides a topic (category 2) whose dialogue node
  * isn't currently available, this overlay can't evaluate that and lists every carried topic;
  * item names the engine overrides at runtime (conditional text) show their base name.
  *
@@ -248,6 +252,18 @@ static volatile int g_rows_per_col = 20, g_cols = 1, g_page_cap = 20;   /* publi
 static volatile int g_nav;                  /* pending navigation from the ISR: set, consumed in frame */
 static int32_t g_toggle_key = 0x58;         /* F12 — a registered KEY setting */
 static int g_scale = 1;
+static int32_t g_view = 0;                  /* 0 list, 1 tiles with icons — registered ENUM */
+static int32_t g_tile_names = 1;            /* names under the tile icons — registered BOOL */
+static int32_t g_icon_zoom = 1;             /* tile icon scale 1..3 — registered INT */
+static const char *const VIEW_NAMES[2] = { "LIST", "TILES" };
+static volatile int g_tile_cols = 8, g_tile_rows = 4;   /* published by compose; ISR navigation uses them */
+
+/* ---- icon cache: decoded 8-bit icons (0 = transparent), filled in on_frame_game, read by compose ---- */
+typedef struct { uint8_t *pix; uint8_t w, h; volatile uint8_t state; } icon_t;   /* state 0 unloaded, 1 ok, 2 failed */
+static icon_t g_icon[MAX_ITEM_ID + 1];
+#define ICON_MAXW 28
+#define ICON_MAXH 56
+
 static char g_status[40];
 
 static void rebuild_list(const struct roth_api_v1 *api)
@@ -298,6 +314,33 @@ static void rebuild_list(const struct roth_api_v1 *api)
     }
 }
 
+/* Tile grid: headers take a whole (short) row of their own, items flow `cols` per row. */
+static int tile_layout(const list_t *l, int cols, int *rowof, int *colof)
+{
+    int row = 0, col = 0;
+    for (int i = 0; i < l->n; i++) {
+        if (l->e[i].is_header) {
+            if (col > 0) { row++; col = 0; }
+            rowof[i] = row; colof[i] = 0; row++;
+        } else {
+            rowof[i] = row; colof[i] = col;
+            if (++col >= cols) { col = 0; row++; }
+        }
+    }
+    return col > 0 ? row + 1 : row;
+}
+
+static int tile_move_row(const list_t *l, int sel, int dir, const int *rowof, const int *colof)
+{
+    int j = sel + dir;
+    while (j >= 0 && j < l->n && (l->e[j].is_header || rowof[j] == rowof[sel])) j += dir;
+    if (j < 0 || j >= l->n) return sel;
+    int r = rowof[j];
+    while (j + dir >= 0 && j + dir < l->n && !l->e[j + dir].is_header && rowof[j + dir] == r &&
+           (dir < 0 ? colof[j] > colof[sel] : colof[j] < colof[sel])) j += dir;
+    return j;
+}
+
 static int step_item(const list_t *l, int from, int dir)
 {
     int i = from + dir;
@@ -321,6 +364,18 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     const list_t *l = &g_list[g_list_front];
     int cap = g_page_cap > 0 ? g_page_cap : 1, rows = g_rows_per_col > 0 ? g_rows_per_col : 1;
     if (make == (uint8_t)g_toggle_key || make == 0x01) { g_state = ST_CLOSED; return 0; }
+    if (g_view == 1 && (make == 0x48 || make == 0x50 || make == 0x49 || make == 0x51)) {
+        int rowof[MAX_ENTRIES], colof[MAX_ENTRIES];
+        tile_layout(l, g_tile_cols > 0 ? g_tile_cols : 1, rowof, colof);
+        int n = (make == 0x49 || make == 0x51) ? (g_tile_rows > 0 ? g_tile_rows : 1) : 1;
+        int dir = (make == 0x48 || make == 0x49) ? -1 : 1, t = g_sel;
+        if (t >= 0 && t < l->n)
+            while (n-- > 0) { int nt = tile_move_row(l, t, dir, rowof, colof); if (nt == t) break; t = nt; }
+        g_sel = t;
+        return 0;
+    }
+    if (g_view == 1 && make == 0x4b) { g_sel = step_item(l, g_sel, -1); return 0; }
+    if (g_view == 1 && make == 0x4d) { g_sel = step_item(l, g_sel, 1); return 0; }
     if (make == 0x48) g_sel = step_item(l, g_sel, -1);
     else if (make == 0x50) g_sel = step_item(l, g_sel, 1);
     else if (make == 0x4b) { int t = g_sel - rows; if (t >= 0) g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
@@ -346,6 +401,39 @@ static void on_mouse_poll(const struct roth_api_v1 *api, struct roth_mouse_poll_
     else if (mp->ax == 0x0003) { mp->ebx &= ~0xffffu; }
 }
 
+/* Decode up to a few not-yet-cached item icons per frame (GAME context): the engine decodes each into our
+ * own buffer; the pool handle is freed straight away so the DAS cache is not held. */
+static void load_icons(const struct roth_api_v1 *api)
+{
+    const struct roth_game_ram_api_v1 *gr = api->game_ram;
+    const list_t *l = &g_list[g_list_front];
+    uint32_t pool = gr->u32(VA_DAS_CACHE_POOL), arch = 0;
+    void *path = gr->to_ptr(VA_ARCHIVE_PATH);
+    if (!pool || !path || !gr->u32(VA_DBASE100_BASE)) return;
+    int budget = 6;
+    for (int i = 0; i < l->n && budget > 0; i++) {
+        if (l->e[i].is_header) continue;
+        int id = l->e[i].id;
+        if (id <= 0 || id > MAX_ITEM_ID || g_icon[id].state) continue;
+        if (!arch && !(arch = api->engine->dos_open_file((uint32_t)(uintptr_t)path, 0))) return;
+        budget--;
+        uint32_t hnd = api->engine->load_item_icon_resource((uint32_t)id, arch);
+        uint32_t img = hnd ? *(const uint32_t *)(uintptr_t)hnd : 0;
+        int w = img ? *(const uint16_t *)(uintptr_t)(img + 4) : 0, h = img ? *(const uint16_t *)(uintptr_t)(img + 6) : 0;
+        if (w > 0 && w <= ICON_MAXW && h > 0 && h <= ICON_MAXH) {
+            uint8_t *buf = (uint8_t *)calloc((size_t)(w * h), 1);
+            if (buf) {
+                api->engine->blit_item_icon(img, (uint32_t)(uintptr_t)buf, (uint32_t)w, 1);
+                g_icon[id].w = (uint8_t)w; g_icon[id].h = (uint8_t)h; g_icon[id].pix = buf;
+                g_icon[id].state = 1;
+            }
+        }
+        if (!g_icon[id].state) g_icon[id].state = 2;
+        if (hnd) api->engine->pool_free_handle((uint32_t *)(uintptr_t)pool, (uint32_t *)(uintptr_t)hnd);
+    }
+    if (arch) api->engine->dos_close_handle(arch);
+}
+
 static void on_frame_game(const struct roth_api_v1 *api)
 {
     const struct roth_game_ram_api_v1 *gr = api->game_ram;
@@ -355,6 +443,8 @@ static void on_frame_game(const struct roth_api_v1 *api)
     if (g_state == ST_CLOSED) { was_open = 0; return; }
     if (!was_open) { g_sel = 0; g_status[0] = '\0'; was_open = 1; }
     rebuild_list(api);
+
+    if (g_view == 1) load_icons(api);
 
     int req = g_equip_request;
     if (req) {
@@ -401,6 +491,96 @@ static void on_frame_game(const struct roth_api_v1 *api)
     }
 }
 
+/* Name under a tile: up to two lines of `maxch` chars, breaking at a space when there is one. */
+static void tile_name_lines(const char *nm, int maxch, char *l1, char *l2)
+{
+    int n = (int)strlen(nm), cut = n <= maxch ? n : maxch;
+    if (n > maxch) { for (int k = maxch; k > maxch / 2; k--) if (nm[k] == ' ') { cut = k; break; } }
+    memcpy(l1, nm, (size_t)cut); l1[cut] = '\0';
+    const char *rest = nm + cut; while (*rest == ' ') rest++;
+    snprintf(l2, (size_t)maxch + 1, "%s", rest);
+}
+
+static void draw_tiles(uint8_t *px, uint32_t w, uint32_t h, const list_t *l, int bx, int by, int bw, int bh,
+                       int top, int foot, int s, int adv)
+{
+    int z = g_icon_zoom < 1 ? 1 : g_icon_zoom > 3 ? 3 : g_icon_zoom;
+    int names = g_tile_names != 0;
+    int iw = ICON_MAXW * z + 8, ih = ICON_MAXH * z + 4;
+    int namech = names ? ((iw + 6 * z) / adv > 12 ? (iw + 6 * z) / adv : 12) : 0;
+    int cw = names ? (namech * adv + 4 > iw ? namech * adv + 4 : iw) : iw;
+    int line = GLYPH_H * s + 3;
+    int ch = ih + (names ? 2 * line : 0) + 6, hh = GLYPH_H * s + 8;   /* item row / header row height */
+    int cols = (bw - 20) / cw; if (cols < 1) cols = 1;
+    int avail = by + bh - foot - top;
+
+    int rowof[MAX_ENTRIES], colof[MAX_ENTRIES];
+    int nrows = tile_layout(l, cols, rowof, colof);
+    int sel = g_sel < 0 ? 0 : g_sel; if (sel >= l->n) sel = l->n - 1;
+    g_tile_cols = cols;
+    g_tile_rows = avail / ch > 0 ? avail / ch : 1;
+
+    /* greedy page split by pixel height: find the first row of the page that contains the selected row */
+    int kind[MAX_ENTRIES + 2];   /* per row: 1 header row, 0 item row */
+    for (int r = 0; r < nrows && r < MAX_ENTRIES + 2; r++) kind[r] = 0;
+    for (int i = 0; i < l->n; i++) if (l->e[i].is_header && rowof[i] < MAX_ENTRIES + 2) kind[rowof[i]] = 1;
+    int first = 0, used = 0, selrow = (l->n > 0 && sel >= 0) ? rowof[sel] : 0, pages = 1, page = 1;
+    for (int r = 0; r < nrows && r < MAX_ENTRIES + 2; r++) {
+        int rh = kind[r] ? hh : ch;
+        if (used + rh > avail && used > 0) { used = 0; pages++; if (r <= selrow) { first = r; page = pages; } }
+        used += rh;
+    }
+
+    int y = top;
+    for (int i = 0; i < l->n; i++) {
+        int r = rowof[i];
+        if (r < first) continue;
+        int ry = top;
+        for (int k = first; k < r; k++) ry += kind[k] ? hh : ch;
+        if (ry + (kind[r] ? hh : ch) > top + avail) break;
+        y = ry;
+        const entry_t *e = &l->e[i];
+        if (e->is_header) {
+            draw_text(px, w, h, bx + 10, y, CAT_TITLE[e->cat], 40, COL_TEXT, s);
+            fill_rect(px, w, h, bx + 10, y + GLYPH_H * s + 1, bw - 20, 1, COL_BORDER);
+            continue;
+        }
+        int x = bx + 10 + colof[i] * cw;
+        if (i == sel) {
+            fill_rect(px, w, h, x, y, cw, 1, COL_BORDER); fill_rect(px, w, h, x, y + ch - 3, cw, 1, COL_BORDER);
+            fill_rect(px, w, h, x, y, 1, ch - 2, COL_BORDER); fill_rect(px, w, h, x + cw - 1, y, 1, ch - 2, COL_BORDER);
+        }
+        const icon_t *ic = (e->id > 0 && e->id <= MAX_ITEM_ID) ? &g_icon[e->id] : NULL;
+        if (ic && ic->state == 1) {
+            int ox = x + (cw - ic->w * z) / 2, oy = y + 2 + (ih - 4 - ic->h * z) / 2;
+            for (int yy = 0; yy < ic->h; yy++)
+                for (int xx = 0; xx < ic->w; xx++) {
+                    uint8_t c = ic->pix[yy * ic->w + xx];
+                    if (c) fill_rect(px, w, h, ox + xx * z, oy + yy * z, z, z, c);
+                }
+        } else {
+            draw_text(px, w, h, x + (cw - adv) / 2, y + ih / 2, "?", 1, COL_TEXT, s);
+        }
+        if (e->equipped) draw_text(px, w, h, x + 3, y + 3, "*", 1, COL_TEXT, s);
+        if (g_items[e->id].stack && e->qty > 1) {
+            char q[12]; snprintf(q, sizeof q, "%d", e->qty);
+            draw_text(px, w, h, x + cw - 3 - (int)strlen(q) * adv, y + ih - GLYPH_H * s - 2, q, 8, COL_TEXT, s);
+        }
+        if (names) {
+            char l1[40], l2[40];
+            tile_name_lines(g_items[e->id].name[0] ? g_items[e->id].name : "?", namech > 38 ? 38 : namech, l1, l2);
+            draw_text(px, w, h, x + (cw - (int)strlen(l1) * adv) / 2, y + ih + 1, l1, namech, COL_TEXT, s);
+            draw_text(px, w, h, x + (cw - (int)strlen(l2) * adv) / 2, y + ih + 1 + line, l2, namech, COL_TEXT, s);
+        }
+    }
+    if (l->n == 0) draw_text(px, w, h, bx + 12, top, "NOTHING CARRIED", 40, COL_TEXT, s);
+
+    char fb[160];
+    const char *selname = (l->n > 0 && !l->e[sel].is_header && g_items[l->e[sel].id].name[0]) ? g_items[l->e[sel].id].name : "";
+    snprintf(fb, sizeof fb, "ARROWS MOVE  ENTER EQUIP  SPACE EXAMINE  ESC CLOSE   PAGE %d/%d   %s", page, pages, g_status[0] ? g_status : (names ? "" : selname));
+    draw_text(px, w, h, bx + 10, by + bh - foot + 2, fb, (bw - 20) / adv, COL_TEXT, s);
+}
+
 static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t w, uint32_t h)
 {
     (void)api;
@@ -430,6 +610,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t
     int cap = rows * cols;
     g_rows_per_col = rows; g_cols = cols; g_page_cap = cap;
 
+    if (g_view == 1) { draw_tiles(px, w, h, l, bx, by, bw, bh, top, foot, s, adv); return; }
     int sel = g_sel; if (sel < 0) sel = 0;
     int page = (l->n > 0) ? sel / cap : 0;
     int first = page * cap;
@@ -463,6 +644,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t
 
 static void on_load(const struct roth_api_v1 *api)
 {
+    if (getenv("ROTH_INVENTORY_VIEW")) g_view = atoi(getenv("ROTH_INVENTORY_VIEW")) ? 1 : 0;   /* seeds the default */
     if (getenv("ROTH_INVENTORY_TOGGLE_KEY"))        /* seeds the default; a saved registry value still wins */
         g_toggle_key = (int32_t)(strtoul(getenv("ROTH_INVENTORY_TOGGLE_KEY"), NULL, 0) & 0x7f);
     {
@@ -474,6 +656,20 @@ static void on_load(const struct roth_api_v1 *api)
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
         d.key = "inspect_key"; d.label = "EXAMINE KEY"; d.type = ROTH_SETTING_KEY; d.value = &g_inspect_key;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "view"; d.label = "VIEW"; d.type = ROTH_SETTING_ENUM; d.value = &g_view;
+        d.imin = 0; d.imax = 1; d.istep = 1; d.enum_names = VIEW_NAMES;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "tile_names"; d.label = "TILE NAMES"; d.type = ROTH_SETTING_BOOL; d.value = &g_tile_names;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "icon_zoom"; d.label = "ICON ZOOM"; d.type = ROTH_SETTING_INT; d.value = &g_icon_zoom;
+        d.imin = 1; d.imax = 3; d.istep = 1;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
