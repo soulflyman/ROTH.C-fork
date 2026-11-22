@@ -50,6 +50,10 @@ install yourself.
    | `mouselook`        | mouse look; **F7** toggles freelook (configured in `mods/mouselook/mouselook.cfg`)               |
    | `inventory_page`   | a single-page inventory overlay opened with the engine's inventory key, with list/tile views and an examine popup (Space) |
 
+   **Requirement:** the key-binding rows of the F11 menu build on the `keybinds` mod from
+   [`roth-mods`](https://github.com/beyond-the-ire/roth-mods), which is *not* part of the bundle. Install it as
+   `mods/keybinds/` next to the others if you want to rebind keys from the menu.
+
    The bundle build compiles them from `sdk/examples/`; to build a single mod yourself, run `make` in its directory
    (needs `gcc` with 32-bit support) and install it as `<game>/mods/<name>/plugin.so`, see
    [`sdk/examples/README.md`](sdk/examples/README.md).
