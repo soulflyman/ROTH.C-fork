@@ -100,7 +100,7 @@ static int g_headless  = 0;    /* --headless / ROTH_HEADLESS=1: no window, shm p
 static int g_sdl_flag  = 0;    /* --sdl / --windowed / ROTH_SDL=1: explicit window (both-mode w/ --headless) */
 static int g_want_shm  = 0;    /* ROTH_SHM=1: publish /dev/shm/roth_fb even under a window */
 static int g_sdl_scale = 0;    /* --scale N / ROTH_SCALE: initial window scale (0 = auto-fit) */
-static int g_sdl_filter = 0;   /* flag word: bit0 linear (legacy), bit1 --aa / ROTH_AA (edge anti-aliasing), bits 16-19 scaler, bit 20 integer scale, bits 24-27 scanlines */
+static int g_sdl_filter = 0;   /* flag word: bit0 linear (legacy), bit1 --aa / ROTH_AA (edge anti-aliasing), bits 16-19 scaler, bit 20 integer scale, bits 24-27 scanlines, bits 28-29 CRT look */
 
 /* --filter / ROTH_FILTER name -> scaler id in bits 16-19 (and the legacy linear bit 0) */
 static void set_filter_name(const char *n)
@@ -114,6 +114,11 @@ static void set_filter_name(const char *n)
             return;
         }
     fprintf(stderr, "[main] unknown filter '%s' (nearest|linear|sharp|scale2x): using nearest\n", n);
+}
+static void set_crt(int n)
+{
+    g_sdl_filter &= ~(0x3 << 28);
+    g_sdl_filter |= (n < 0 ? 0 : n > 2 ? 2 : n) << 28;
 }
 static void set_scanlines(int n)
 {
@@ -499,6 +504,8 @@ int main(int argc, char **argv)
             g_sdl_scale = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--filter") && i + 1 < argc) {
             set_filter_name(argv[++i]);
+        } else if (!strcmp(argv[i], "--crt") && i + 1 < argc) {
+            set_crt(atoi(argv[++i]));
         } else if (!strcmp(argv[i], "--integer-scale")) {
             g_sdl_filter |= 1 << 20;
         } else if (!strcmp(argv[i], "--scanlines") && i + 1 < argc) {
@@ -542,6 +549,7 @@ int main(int argc, char **argv)
     if (getenv("ROTH_FILTER")) set_filter_name(getenv("ROTH_FILTER"));
     if (getenv("ROTH_INTEGER_SCALE")) g_sdl_filter |= 1 << 20;
     if (getenv("ROTH_SCANLINES")) set_scanlines(atoi(getenv("ROTH_SCANLINES")));
+    if (getenv("ROTH_CRT")) set_crt(atoi(getenv("ROTH_CRT")));
     if (getenv("ROTH_AA")) g_sdl_filter |= 2;
 #endif
 

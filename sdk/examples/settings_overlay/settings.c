@@ -467,14 +467,15 @@ static int g_mouselook_dirty = 0;
  * overlay itself, so they persist in mods/_settings.cfg like any mod's; on_change pushes them to the host via
  * set_display_filter (flag word: bit0 linear, bit1 edge-AA, bits 8-15 AA threshold). */
 static int32_t g_set_linear = 0 /* scaler id: 0 nearest, 1 linear, 2 sharp-bilinear, 3 scale2x (key stays "linear_filter" so old saves still load) */,
-               g_set_aa = 0, g_set_aa_thr = 24, g_set_integer = 0, g_set_scan = 0;
+               g_set_aa = 0, g_set_aa_thr = 24, g_set_integer = 0, g_set_scan = 0, g_set_crt = 0;
+static const char *const g_crt_names[] = { "OFF", "LIGHT", "STRONG" };
 static const char *const g_scaler_names[] = { "NEAREST", "LINEAR", "SHARP", "SCALE2X" };
 static const struct roth_api_v1 *g_api;
 static void apply_display_flags(void)
 {
     if (!g_api) return;
     g_api->set_display_filter((uint32_t)((g_set_linear == 1 ? 1 : 0) | (g_set_aa ? 2 : 0) | ((g_set_aa_thr & 0xff) << 8) |
-                                         ((g_set_linear & 0xf) << 16) | ((g_set_integer ? 1 : 0) << 20) | ((g_set_scan & 0xf) << 24)));
+                                         ((g_set_linear & 0xf) << 16) | ((g_set_integer ? 1 : 0) << 20) | ((g_set_scan & 0xf) << 24) | ((g_set_crt & 0x3) << 28)));
 }
 
 static uint8_t g_action_sc[64]; /* current scancode per action, refreshed from game_ram on open */
@@ -539,6 +540,8 @@ static void on_load(const struct roth_api_v1 *api)
         g_set_integer = (int32_t)((ff >> 20) & 1u);
         g_set_scan = (int32_t)((ff >> 24) & 0xfu);
         if (g_set_scan > 8) g_set_scan = 8;
+        g_set_crt = (int32_t)((ff >> 28) & 0x3u);
+        if (g_set_crt > 2) g_set_crt = 0;
         g_set_aa = (int32_t)((ff >> 1) & 1u);
         if ((ff >> 8) & 0xffu) g_set_aa_thr = (int32_t)((ff >> 8) & 0xffu);
         else if (getenv("ROTH_AA_EDGE")) g_set_aa_thr = atoi(getenv("ROTH_AA_EDGE"));
@@ -559,6 +562,11 @@ static void on_load(const struct roth_api_v1 *api)
         d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";
         d.key = "scanlines"; d.label = "SCANLINES"; d.type = ROTH_SETTING_INT; d.value = &g_set_scan;
         d.imin = 0; d.imax = 8; d.istep = 1; d.on_change = apply_display_flags;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";
+        d.key = "crt_look"; d.label = "CRT LOOK"; d.type = ROTH_SETTING_ENUM; d.value = &g_set_crt;
+        d.imax = 2; d.enum_names = g_crt_names; d.on_change = apply_display_flags;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d; d.group = "DISPLAY";

@@ -69,7 +69,7 @@ struct roth_shm {
     volatile uint32_t filter_mode;
 
     /* filter_mode is a flag word: bit 0 = linear upscale filter, bit 1 = edge anti-aliasing of the 3D view
-     * (sdl_host.c), bits 8-15 = AA edge contrast threshold (0 = default 24 / ROTH_AA_EDGE), bits 16-19 = upscaler id (0 nearest, 1 linear, 2 sharp-bilinear, 3 scale2x), bit 20 = integer scaling, bits 24-27 = scanline strength 0-8. The AA pass needs to know WHERE the 3D scene is and which pixels a plugin drew over it:
+     * (sdl_host.c), bits 8-15 = AA edge contrast threshold (0 = default 24 / ROTH_AA_EDGE), bits 16-19 = upscaler id (0 nearest, 1 linear, 2 sharp-bilinear, 3 scale2x), bit 20 = integer scaling, bits 24-27 = scanline strength 0-8, bits 28-29 = CRT look 0-2. The AA pass needs to know WHERE the 3D scene is and which pixels a plugin drew over it:
      *   view_*: the 3D view rectangle in published-frame pixels, published by traps.c only during normal
      *           gameplay (all 0 otherwise: menus, cutscenes, title screens are never smoothed);
      *   ovl_*:  bounding box of the pixels the plugins' compose seam changed this tick (empty when x1 <= x0),
