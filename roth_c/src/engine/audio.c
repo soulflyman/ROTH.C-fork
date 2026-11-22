@@ -742,6 +742,24 @@ static void au_sfx_drop(const char *why, uint32_t id, uint32_t param)
     fflush(stderr);
 }
 
+static void au_sfx_dump_state(void)
+{
+    static unsigned n;
+    if (n++ >= 3) return;
+    uint32_t base = (uint32_t)GADDR(VA_g_sound_voice_descriptors);
+    fprintf(stderr, "[sfx] descriptors (slot:sample/lock/grp/size/flags):");
+    for (uint32_t i = 0; i < 0x20; i++) {
+        uint32_t d = ld32u(base + i * 4);
+        if (d) fprintf(stderr, " %u:%u/%u/%u/%u/%x", i, ld16(d + 0xa), ld8(d + 8), ld8(d + 9), ld32u(d), ld8(d + 6));
+    }
+    fprintf(stderr, "\n[sfx] records (idx:emitter/slot/type/vol):");
+    uint32_t rec = (uint32_t)GADDR(VA_g_active_sound_handles);
+    for (int i = 0; i < 0x10; i++, rec += 0x9a)
+        if (ld32u(rec)) fprintf(stderr, " %d:%x/%u/%x/%u", i, ld32u(rec), ld8(rec + 5), ld8(rec + 4), ld16(rec + 0x10));
+    fprintf(stderr, "\n");
+    fflush(stderr);
+}
+
 /* the 0x27283 body shared by play_sound_effect (group 0x6e) + start_persistent_looping_sound (0x20) */
 static uint32_t au_play_effect_body(uint32_t id_in, uint32_t param)
 {
@@ -758,7 +776,7 @@ static uint32_t au_play_effect_body(uint32_t id_in, uint32_t param)
     st8(rec + 6, 0);
     st32(rec + 0x22, param);
     uint32_t slot = resolve_sound_sample(id) & 0xff;
-    if (slot == 0xff) { au_sfx_drop("sample not resolvable", id, param); st32(rec, 0); return 0; }
+    if (slot == 0xff) { au_sfx_drop("sample not resolvable", id, param); au_sfx_dump_state(); st32(rec, 0); return 0; }
     st8(rec + 5, (uint8_t)slot);
     start_sound_voice(rec, idx);                  /* EDX leftover = find_free index */
     return rec;
