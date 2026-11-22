@@ -428,6 +428,12 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
             g_swallowed[make] = 1;
             return 0;
         }
+        if (!is_break && make == (uint8_t)g_toggle_key) {   /* inventory key: close the popup and the overlay, straight back to the game */
+            api->game_ram->set_u32(VA_PANEL_OPEN + 8u, 1);
+            g_state = ST_CLOSED;
+            g_swallowed[make] = 1;
+            return 0;
+        }
         if (is_break && g_swallowed[make]) { g_swallowed[make] = 0; return 0; }
         return sc;
     }
