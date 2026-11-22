@@ -420,6 +420,46 @@ static uint8_t nav_translate(uint8_t make)
     return make;
 }
 
+#define VA_TICK 0x90bccu
+#define REPEAT_DELAY_TICKS 25            /* ~360 ms before the first repeat */
+#define REPEAT_RATE_TICKS  4             /* ~57 ms between repeats */
+static volatile uint8_t g_held;          /* translated navigation make code being held, 0 = none */
+static uint16_t g_held_next;
+
+/* One list-navigation / action step for an (already translated) make code; also what a held-key repeat does. */
+static void nav_step(uint8_t make)
+{
+    const list_t *l = &g_list[g_list_front];
+    int cap = g_page_cap > 0 ? g_page_cap : 1, rows = g_rows_per_col > 0 ? g_rows_per_col : 1;
+    if (make == (uint8_t)g_toggle_key || make == 0x01) { g_state = ST_CLOSED; return; }
+    if (g_view == 1 && (make == 0x48 || make == 0x50 || make == 0x49 || make == 0x51)) {
+        int rowof[MAX_ENTRIES], colof[MAX_ENTRIES];
+        tile_layout(l, g_tile_cols > 0 ? g_tile_cols : 1, rowof, colof);
+        int n = (make == 0x49 || make == 0x51) ? (g_tile_rows > 0 ? g_tile_rows : 1) : 1;
+        int dir = (make == 0x48 || make == 0x49) ? -1 : 1, t = g_sel;
+        if (t >= 0 && t < l->n)
+            while (n-- > 0) { int nt = tile_move_row(l, t, dir, rowof, colof); if (nt == t) break; t = nt; }
+        g_sel = t;
+        return;
+    }
+    if (g_view == 1 && make == 0x4b) { g_sel = step_item(l, g_sel, -1); return; }
+    if (g_view == 1 && make == 0x4d) { g_sel = step_item(l, g_sel, 1); return; }
+    if (make == 0x48) g_sel = step_item(l, g_sel, -1);
+    else if (make == 0x50) g_sel = step_item(l, g_sel, 1);
+    else if (make == 0x4b) { int t = g_sel - rows; if (t >= 0) g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
+    else if (make == 0x4d) { int t = g_sel + rows; if (t < l->n) g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
+    else if (make == 0x49) { int t = g_sel - cap; if (t < 0) t = 0; g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
+    else if (make == 0x51) { int t = g_sel + cap; if (t >= l->n) t = l->n - 1; g_sel = (t >= 0 && l->e[t].is_header) ? step_item(l, t, -1) : t; }
+    else if (make == (uint8_t)g_inspect_key) {
+        if (g_sel >= 0 && g_sel < l->n && !l->e[g_sel].is_header)
+            g_inspect_request = l->e[g_sel].slot + 1;
+    }
+    else if (make == 0x1c) {
+        if (g_sel >= 0 && g_sel < l->n && !l->e[g_sel].is_header && l->e[g_sel].weapon)
+            g_equip_request = l->e[g_sel].slot + 1;
+    }
+}
+
 static int g_paused;                                      /* we parked the game in movement mode 2 */
 static volatile uint8_t g_swallowed[128];   /* makes we swallowed: their break is swallowed too, every other break passes */
 
@@ -447,6 +487,7 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         return sc;
     }
     if (is_break) {   /* a break of a key the engine saw go down (e.g. Space = jump) MUST reach it, else it stays "held" */
+        if (g_held && nav_translate(make) == g_held) g_held = 0;
         if (g_swallowed[make]) { g_swallowed[make] = 0; return 0; }
         return sc;
     }
@@ -458,35 +499,9 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     }
     g_swallowed[make] = 1;
     make = nav_translate(make);
-    const list_t *l = &g_list[g_list_front];
-    int cap = g_page_cap > 0 ? g_page_cap : 1, rows = g_rows_per_col > 0 ? g_rows_per_col : 1;
-    if (make == (uint8_t)g_toggle_key || make == 0x01) { g_state = ST_CLOSED; return 0; }
-    if (g_view == 1 && (make == 0x48 || make == 0x50 || make == 0x49 || make == 0x51)) {
-        int rowof[MAX_ENTRIES], colof[MAX_ENTRIES];
-        tile_layout(l, g_tile_cols > 0 ? g_tile_cols : 1, rowof, colof);
-        int n = (make == 0x49 || make == 0x51) ? (g_tile_rows > 0 ? g_tile_rows : 1) : 1;
-        int dir = (make == 0x48 || make == 0x49) ? -1 : 1, t = g_sel;
-        if (t >= 0 && t < l->n)
-            while (n-- > 0) { int nt = tile_move_row(l, t, dir, rowof, colof); if (nt == t) break; t = nt; }
-        g_sel = t;
-        return 0;
-    }
-    if (g_view == 1 && make == 0x4b) { g_sel = step_item(l, g_sel, -1); return 0; }
-    if (g_view == 1 && make == 0x4d) { g_sel = step_item(l, g_sel, 1); return 0; }
-    if (make == 0x48) g_sel = step_item(l, g_sel, -1);
-    else if (make == 0x50) g_sel = step_item(l, g_sel, 1);
-    else if (make == 0x4b) { int t = g_sel - rows; if (t >= 0) g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
-    else if (make == 0x4d) { int t = g_sel + rows; if (t < l->n) g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
-    else if (make == 0x49) { int t = g_sel - cap; if (t < 0) t = 0; g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
-    else if (make == 0x51) { int t = g_sel + cap; if (t >= l->n) t = l->n - 1; g_sel = (t >= 0 && l->e[t].is_header) ? step_item(l, t, -1) : t; }
-    else if (make == (uint8_t)g_inspect_key) {
-        if (g_sel >= 0 && g_sel < l->n && !l->e[g_sel].is_header)
-            g_inspect_request = l->e[g_sel].slot + 1;
-    }
-    else if (make == 0x1c) {
-        if (g_sel >= 0 && g_sel < l->n && !l->e[g_sel].is_header && l->e[g_sel].weapon)
-            g_equip_request = l->e[g_sel].slot + 1;
-    }
+    nav_step(make);
+    g_held = (make == 0x48 || make == 0x50 || make == 0x4b || make == 0x4d || make == 0x49 || make == 0x51) ? make : 0;
+    g_held_next = (uint16_t)(api->game_ram->u16(VA_TICK) + REPEAT_DELAY_TICKS);
     return 0;
 }
 
@@ -752,7 +767,12 @@ static void draw_tiles(uint8_t *px, uint32_t w, uint32_t h, const list_t *l, int
 
 static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t w, uint32_t h)
 {
-    (void)api;
+    if (g_held && g_state != ST_CLOSED && !g_inspecting) {   /* hold-to-repeat: the host forwards only the first make code */
+        uint16_t now = api->game_ram->u16(VA_TICK);
+        if ((int16_t)(uint16_t)(now - g_held_next) >= 0) { nav_step(g_held); g_held_next = (uint16_t)(now + REPEAT_RATE_TICKS); }
+    } else if (g_state == ST_CLOSED || g_inspecting) {
+        g_held = 0;
+    }
     if (g_state == ST_CLOSED || !px) return;
     if (g_gray_bg) gray_view(api, px, w, h);
     if (g_inspecting) return;

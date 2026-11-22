@@ -454,6 +454,7 @@ static int g_sel = 0;
 static int g_scroll_top = 0;
 static volatile int g_vis_rows = VISIBLE_ROWS;   /* rows that actually fit the box; published by on_compose_tick */
 
+static int32_t g_nav_move_keys = 1;  /* registered BOOL: movement keys navigate the menu */
 static int32_t g_toggle_key = 0x57; /* F11 — a registered KEY setting, so the user can move it */
 
 static double g_disp_yaw = 1.5, g_disp_pitch = 0.2;
@@ -588,6 +589,10 @@ static void on_load(const struct roth_api_v1 *api)
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
+        d.key = "nav_move_keys"; d.label = "MOVE KEYS NAVIGATE"; d.type = ROTH_SETTING_BOOL; d.value = &g_nav_move_keys;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
         d.key = "text_color"; d.label = "TEXT COLOR"; d.type = ROTH_SETTING_INT; d.value = &g_text_color;
         d.imin = 0; d.imax = 255; d.istep = 1;
         api->register_setting(&d);
@@ -672,6 +677,32 @@ static void reg_adjust(int row, int dir)
 static volatile uint8_t g_held;          /* make code being held, 0 = none */
 static uint16_t g_held_next;
 
+/* Movement keys double as menu navigation (same scheme as the inventory overlay): the live scancodes of the engine's held-key
+ * table (5-byte records {scancode, handler ptr} at 0x707f1; handlers = move_forward/backward, strafe_left/right), so a rebind
+ * follows automatically. */
+static volatile uint8_t g_nav_sc[4];                      /* up, down, left, right; 0 = unknown */
+static const uint32_t NAV_HANDLER_VA[4] = { 0x12686u, 0x12668u, 0x126adu, 0x126a4u };
+
+static void refresh_nav_keys(const struct roth_game_ram_api_v1 *gr)
+{
+    for (int a = 0; a < 4; a++) {
+        uint32_t want = (uint32_t)(uintptr_t)gr->to_ptr(NAV_HANDLER_VA[a]), rec = 0x707f1u;
+        uint8_t sc = 0;
+        for (int i = 0; i < 64 && gr->u8(rec) != 0; i++, rec += 5)
+            if (gr->u32(rec + 1) == want) { sc = gr->u8(rec); break; }
+        g_nav_sc[a] = sc;
+    }
+}
+
+static uint8_t nav_translate(uint8_t make)
+{
+    static const uint8_t ARROW[4] = { 0x48, 0x50, 0x4b, 0x4d };
+    if (!g_nav_move_keys || make == (uint8_t)g_toggle_key || make == 0x01 || make == 0x1c) return make;
+    for (int a = 0; a < 4; a++)
+        if (g_nav_sc[a] && g_nav_sc[a] == make) return ARROW[a];
+    return make;
+}
+
 static int row_steps_number(int row)
 {
     if (row < 0 || row >= g_nrows) return 0;
@@ -725,7 +756,7 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     int is_break = (sc & 0x80) != 0;
 
     if (is_break) {   /* a release must reach the engine unless we swallowed that key's press (else e.g. Space=jump stays "held") */
-        if (make == g_held) g_held = 0;
+        if (g_held && nav_translate(make) == g_held) g_held = 0;
         if (g_swallowed[make]) { g_swallowed[make] = 0; return 0; }
         return sc;
     }
@@ -774,6 +805,7 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         g_overlay_open = 0;
         return 0;
     }
+    make = nav_translate(make);
     if (make == 0x48 || make == 0x50 || make == 0x4b || make == 0x4d) {   /* Up / Down / Left / Right (auto-repeat while held) */
         nav_key(make);
         g_held = (row_repeatable(make)) ? make : 0;
@@ -964,6 +996,7 @@ static void on_frame_game(const struct roth_api_v1 *api)
     const struct roth_game_ram_api_v1 *gr = api->game_ram;
 
     if (!g_rows_built) { build_rows(api); g_rows_built = 1; }
+    refresh_nav_keys(gr);
     if (g_commit_pending >= 0) {                    /* a registry value changed in the ISR: persist + notify */
         int c = g_commit_pending; g_commit_pending = -1;
         api->setting_commit((uint32_t)c);
