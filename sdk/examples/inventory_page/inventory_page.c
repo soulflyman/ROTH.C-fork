@@ -5,7 +5,7 @@
  *   cp plugin.so <game>/mods/_inventory/plugin.so
  *
  * Toggle: F12 (ROTH_INVENTORY_TOGGLE_KEY=0xNN overrides), only during normal gameplay.
- * Keys while open: Up/Down move, Left/Right jump a column, PgUp/PgDn page, Enter equips the
+ * Keys while open: Up/Down move (the movement keys, e.g. W/S/A/D, work as arrows too), Left/Right jump a column, PgUp/PgDn page, Enter equips the
  * selected weapon, Space (EXAMINE KEY setting) opens the engine's own item detail view, Esc or the toggle key closes. Every other key is swallowed.
  *
  * DATA. The carried array (game_ram 0x80c30: 256 x {s16 id, u16 qty}, count at 0x80c2c) is read from
@@ -353,6 +353,34 @@ static int step_item(const list_t *l, int from, int dir)
 }
 
 /* on_scancode (TICK_ISR): flags only. */
+/* Movement keys double as list navigation: the live scancodes of the engine's held-key table (same lookup as the
+ * settings overlay: 5-byte records {scancode, handler ptr} at 0x707f1; handlers = the move_forward/backward,
+ * strafe_left/right action routines), so a rebind in keybinds.cfg or the F11 menu follows automatically. */
+static int32_t g_nav_move_keys = 1;                       /* registered BOOL */
+static volatile uint8_t g_nav_sc[4];                      /* up, down, left, right; 0 = unknown */
+#define VA_HELD_KEYMAP 0x707f1u
+static const uint32_t NAV_HANDLER_VA[4] = { 0x12686u, 0x12668u, 0x126adu, 0x126a4u };
+
+static void refresh_nav_keys(const struct roth_game_ram_api_v1 *gr)
+{
+    for (int a = 0; a < 4; a++) {
+        uint32_t want = (uint32_t)(uintptr_t)gr->to_ptr(NAV_HANDLER_VA[a]), rec = VA_HELD_KEYMAP;
+        uint8_t sc = 0;
+        for (int i = 0; i < 64 && gr->u8(rec) != 0; i++, rec += 5)
+            if (gr->u32(rec + 1) == want) { sc = gr->u8(rec); break; }
+        g_nav_sc[a] = sc;
+    }
+}
+
+static uint8_t nav_translate(uint8_t make)
+{
+    static const uint8_t ARROW[4] = { 0x48, 0x50, 0x4b, 0x4d };
+    if (!g_nav_move_keys || make == (uint8_t)g_toggle_key || make == (uint8_t)g_inspect_key || make == 0x01 || make == 0x1c) return make;
+    for (int a = 0; a < 4; a++)
+        if (g_nav_sc[a] && g_nav_sc[a] == make) return ARROW[a];
+    return make;
+}
+
 static volatile uint8_t g_swallowed[128];   /* makes we swallowed: their break is swallowed too, every other break passes */
 
 static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
@@ -381,6 +409,7 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
         return sc;
     }
     g_swallowed[make] = 1;
+    make = nav_translate(make);
     const list_t *l = &g_list[g_list_front];
     int cap = g_page_cap > 0 ? g_page_cap : 1, rows = g_rows_per_col > 0 ? g_rows_per_col : 1;
     if (make == (uint8_t)g_toggle_key || make == 0x01) { g_state = ST_CLOSED; return 0; }
@@ -538,6 +567,7 @@ static void on_frame_game(const struct roth_api_v1 *api)
     static int was_open;
     if (g_inspecting) return;   /* re-entered from the popup's own mouse polls: the engine owns the screen */
     dev_auto(api);
+    refresh_nav_keys(api->game_ram);
     if (g_state != ST_CLOSED && !getenv("ROTH_INVENTORY_FORCE_OPEN") &&
         gr->u8(VA_PLAYER_MOVEMENT_ENABLED) != 1) g_state = ST_CLOSED;
     if (g_state == ST_CLOSED) { was_open = 0; return; }
@@ -749,6 +779,10 @@ static void on_load(const struct roth_api_v1 *api)
         d.struct_size = (uint32_t)sizeof d;
         d.key = "icon_zoom"; d.label = "ICON ZOOM"; d.type = ROTH_SETTING_INT; d.value = &g_icon_zoom;
         d.imin = 1; d.imax = 3; d.istep = 1;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "nav_move_keys"; d.label = "MOVE KEYS NAVIGATE"; d.type = ROTH_SETTING_BOOL; d.value = &g_nav_move_keys;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
