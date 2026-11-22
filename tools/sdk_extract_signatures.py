@@ -66,6 +66,8 @@ STARTER_SET = [
     "reset_weapon_fire_timing",     # slot 24  0x1765c  disarm/reset the weapon fire-timing state
     "activate_weapon_item",         # slot 25  0x184ab  equip: (carried-slot ptr, dbase100 item id)
     "render_weapon_hud",            # slot 26  0x24165  redraw the weapon HUD panel
+    # --- v0.9 (inventory overlay: examine) — the engine's item detail view (GDV close-up / document popup) ---
+    "load_dbase300_resource_at_offset",  # slot 27  0x196b9  modal inspect popup: (offset, loop flag, record, hov entry)
     # APPEND new exposures HERE — never above, never reorder (slot order is ABI).
 ]
 

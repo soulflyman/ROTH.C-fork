@@ -6,7 +6,7 @@
  *
  * Toggle: F12 (ROTH_INVENTORY_TOGGLE_KEY=0xNN overrides), only during normal gameplay.
  * Keys while open: Up/Down move, Left/Right jump a column, PgUp/PgDn page, Enter equips the
- * selected weapon, Esc or the toggle key closes. Every other key is swallowed.
+ * selected weapon, Space (EXAMINE KEY setting) opens the engine's own item detail view, Esc or the toggle key closes. Every other key is swallowed.
  *
  * DATA. The carried array (game_ram 0x80c30: 256 x {s16 id, u16 qty}, count at 0x80c2c) is read from
  * game_ram every frame. Item names / categories are static game data, so they are loaded ONCE at
@@ -24,6 +24,9 @@
  *
  * ACTIONS. Equip = the exact sequence the engine's number-key handler runs (SDK 0.7 exposed calls):
  * reset_weapon_fire_timing, activate_weapon_item(slot ptr, id), render_weapon_hud(1, attrs ptr).
+ * EXAMINE = load_dbase300_resource_at_offset (SDK 0.9 slot 27), the modal popup the native inventory opens on Space.
+ * It runs inside on_frame_game; while it does, the overlay is hidden and input passes through to the engine's
+ * own popup loop. Items with no detail data (DBASE100 record +8 == 0) report NOTHING TO EXAMINE. No close-up icon yet.
  * Runs from on_frame_game (GAME context); on_scancode (TICK_ISR) only sets flags.
  *
  * Env: ROTH_INVENTORY_TOGGLE_KEY, ROTH_INVENTORY_SCALE (font scale, default 1),
@@ -147,10 +150,15 @@ static const char *const BG_STYLE_NAMES[3] = { "SOLID", "SEE-THROUGH", "NONE" };
 #define VA_SELECTED_SLOT    0x81044u  /* g_selected_item_primary: the "held" item slot ptr */
 #define VA_WEAPON_ATTRS     0x811b4u
 #define VA_PLAYER_MOVEMENT_ENABLED 0x7674au
+#define VA_DBASE100_BASE    0x81e1cu  /* runtime ptr to the loaded DBASE100 (record = base + file offset) */
+#define VA_PANEL_ANCHOR_X   0x80b24u
+#define VA_PANEL_ANCHOR_Y   0x80b28u
+#define VA_SCREEN_PITCH     0x85498u
+#define VA_SCREEN_HEIGHT    0x8549cu
 
 /* ---- static item data (loaded once from DBASE100/400) ---- */
 #define MAX_ITEM_ID 1024
-typedef struct { uint8_t cat, weapon, stack, valid; char name[34]; } item_info_t;
+typedef struct { uint8_t cat, weapon, stack, valid, loop; uint32_t recoff, doc; char name[34]; } item_info_t;
 static item_info_t g_items[MAX_ITEM_ID + 1];
 static int g_items_loaded;
 static int g_demo;   /* ROTH_INVENTORY_DEMO=1: synthetic list for screenshots */
@@ -210,6 +218,9 @@ static void load_item_data(const char *game_dir)
             it->name[len] = '\0';
             char *z = (char *)memchr(it->name, '\0', sizeof it->name); (void)z;
         }
+        it->recoff = off;
+        it->doc = rd32(db, l100, off + 8);          /* detail-view (DBASE300 GDV/document) offset >> 3; 0 = none */
+        it->loop = (uint8_t)(flags & 1);
         it->valid = 1;
     }
     free(db); free(tx);
@@ -228,6 +239,9 @@ static volatile ui_state_t g_state = ST_CLOSED;
 static volatile int g_sel;                  /* index into the front list (always an item entry) */
 static volatile int g_page;
 static volatile int g_equip_request;        /* slot index + 1, 0 = none */
+static volatile int g_inspect_request;      /* slot index + 1, 0 = none */
+static volatile int g_inspecting;           /* engine detail popup running: overlay hidden, input passes through */
+static int32_t g_inspect_key = 0x39;        /* Space, like the native inventory — a registered KEY setting */
 static volatile int g_rows_per_col = 20, g_cols = 1, g_page_cap = 20;   /* published by compose */
 static volatile int g_nav;                  /* pending navigation from the ISR: set, consumed in frame */
 static int32_t g_toggle_key = 0x58;         /* F12 — a registered KEY setting */
@@ -294,6 +308,7 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
 {
     uint8_t make = (uint8_t)(sc & 0x7f);
     int is_break = (sc & 0x80) != 0;
+    if (g_inspecting) return sc;
     if (g_state == ST_CLOSED) {
         if (!is_break && make == (uint8_t)g_toggle_key && api->game_ram->u8(VA_PLAYER_MOVEMENT_ENABLED) == 1) {
             g_state = ST_OPEN; return 0;
@@ -310,6 +325,10 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     else if (make == 0x4d) { int t = g_sel + rows; if (t < l->n) g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
     else if (make == 0x49) { int t = g_sel - cap; if (t < 0) t = 0; g_sel = l->e[t].is_header ? step_item(l, t, 1) : t; }
     else if (make == 0x51) { int t = g_sel + cap; if (t >= l->n) t = l->n - 1; g_sel = (t >= 0 && l->e[t].is_header) ? step_item(l, t, -1) : t; }
+    else if (make == (uint8_t)g_inspect_key) {
+        if (g_sel >= 0 && g_sel < l->n && !l->e[g_sel].is_header)
+            g_inspect_request = l->e[g_sel].slot + 1;
+    }
     else if (make == 0x1c) {
         if (g_sel >= 0 && g_sel < l->n && !l->e[g_sel].is_header && l->e[g_sel].weapon)
             g_equip_request = l->e[g_sel].slot + 1;
@@ -320,7 +339,7 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
 static void on_mouse_poll(const struct roth_api_v1 *api, struct roth_mouse_poll_v1 *mp)
 {
     (void)api;
-    if (g_state == ST_CLOSED) return;
+    if (g_state == ST_CLOSED || g_inspecting) return;
     if (mp->ax == 0x000b) { mp->ecx &= ~0xffffu; mp->edx &= ~0xffffu; }
     else if (mp->ax == 0x0003) { mp->ebx &= ~0xffffu; }
 }
@@ -348,13 +367,35 @@ static void on_frame_game(const struct roth_api_v1 *api)
         api->engine->activate_weapon_item(sp, (uint32_t)id);
         api->engine->render_weapon_hud(1, (uint32_t)(uintptr_t)gr->to_ptr(VA_WEAPON_ATTRS));
         snprintf(g_status, sizeof g_status, "EQUIPPED");
+        return;
+    }
+
+    req = g_inspect_request;
+    if (req) {
+        g_inspect_request = 0;
+        int id = (int16_t)gr->u16(VA_INV_ARRAY + (uint32_t)(req - 1) * 4u);
+        uint32_t dbase = gr->u32(VA_DBASE100_BASE);
+        if (id <= 0 || id > MAX_ITEM_ID || !g_items[id].valid || !dbase) return;
+        const item_info_t *it = &g_items[id];
+        if (it->doc == 0) { snprintf(g_status, sizeof g_status, "NOTHING TO EXAMINE"); return; }
+        /* the popup centres itself on these two panel-origin globals (compute_viewport_half_extents) */
+        gr->set_u32(VA_PANEL_ANCHOR_Y, gr->u32(VA_SCREEN_HEIGHT) >> 1);
+        gr->set_u32(VA_PANEL_ANCHOR_X, (gr->u32(VA_SCREEN_PITCH) - 0x130u) >> 1);
+        static uint32_t hov[3];   /* {close-up icon handle (none), carried slot ptr, item id} — game-side 12-byte entry */
+        hov[0] = 0;
+        hov[1] = (uint32_t)((uintptr_t)gr->to_ptr(VA_INV_ARRAY) + (uintptr_t)(req - 1) * 4u);
+        hov[2] = (uint32_t)id;
+        g_inspecting = 1;
+        api->engine->load_dbase300_resource_at_offset((it->doc << 3) + 4u, it->loop, dbase + it->recoff, (uint32_t)(uintptr_t)hov);
+        g_inspecting = 0;
+        g_status[0] = '\0';
     }
 }
 
 static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t w, uint32_t h)
 {
     (void)api;
-    if (g_state == ST_CLOSED || !px) return;
+    if (g_state == ST_CLOSED || !px || g_inspecting) return;
     const list_t *l = &g_list[g_list_front];
     int s = g_scale, adv = (GLYPH_W + 1) * s, rowh = (GLYPH_H + 4) * s;
 
@@ -407,7 +448,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t
 
     char foot_buf[128];
     int pages = (l->n + cap - 1) / cap; if (pages < 1) pages = 1;
-    snprintf(foot_buf, sizeof foot_buf, "ARROWS MOVE  ENTER EQUIP WEAPON  ESC CLOSE   PAGE %d/%d   %s", page + 1, pages, g_status);
+    snprintf(foot_buf, sizeof foot_buf, "ARROWS MOVE  ENTER EQUIP  SPACE EXAMINE  ESC CLOSE   PAGE %d/%d   %s", page + 1, pages, g_status);
     draw_text(px, w, h, bx + 10, by + bh - foot + 2, foot_buf, (bw - 20) / adv, COL_TEXT, s);
 }
 
@@ -420,6 +461,10 @@ static void on_load(const struct roth_api_v1 *api)
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;
         d.key = "toggle_key"; d.label = "INVENTORY KEY"; d.type = ROTH_SETTING_KEY; d.value = &g_toggle_key;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "inspect_key"; d.label = "EXAMINE KEY"; d.type = ROTH_SETTING_KEY; d.value = &g_inspect_key;
         api->register_setting(&d);
         memset(&d, 0, sizeof d);
         d.struct_size = (uint32_t)sizeof d;

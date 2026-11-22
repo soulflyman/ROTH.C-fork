@@ -2,9 +2,9 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 8,
+ "sdk_minor": 9,
  "abi_major": 0,
- "abi_minor": 8,
+ "abi_minor": 9,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
@@ -88,7 +88,7 @@
    ]
   },
   "roth_engine_api_v1": {
-   "size": 108,
+   "size": 112,
    "fields": [
     {
      "slot": 0,
@@ -509,6 +509,23 @@
      "kind": "fnptr",
      "ret": "void",
      "params": [
+      "uint32_t",
+      "uint32_t"
+     ]
+    },
+    {
+     "slot": 27,
+     "name": "load_dbase300_resource_at_offset",
+     "id": 104121,
+     "va": "0x196b9",
+     "signature_id": 104121,
+     "offset": 108,
+     "size": 4,
+     "kind": "fnptr",
+     "ret": "uint32_t",
+     "params": [
+      "uint32_t",
+      "uint32_t",
       "uint32_t",
       "uint32_t"
      ]
@@ -1390,6 +1407,23 @@
    "kind": "fnptr",
    "ret": "void",
    "params": [
+    "uint32_t",
+    "uint32_t"
+   ]
+  },
+  {
+   "slot": 27,
+   "name": "load_dbase300_resource_at_offset",
+   "id": 104121,
+   "va": "0x196b9",
+   "signature_id": 104121,
+   "offset": 108,
+   "size": 4,
+   "kind": "fnptr",
+   "ret": "uint32_t",
+   "params": [
+    "uint32_t",
+    "uint32_t",
     "uint32_t",
     "uint32_t"
    ]

@@ -1,7 +1,7 @@
 {
  "schema": "roth-sdk/functions_skipped/v1",
  "note": "engine.h prototypes with NO canonical corpus VA: host-harness helpers, ABI-register wrappers, mid-entries, standalone-only shims. Recorded for honesty and CI stability; never assigned an id.",
- "count": 18,
+ "count": 19,
  "skipped": [
   {
    "name": "call_orig_raw",
@@ -90,6 +90,11 @@
   },
   {
    "name": "play_distance_variant_sound_regs",
+   "ret": "void",
+   "reason": "no corpus VA (host-harness or standalone-only alt-entry)"
+  },
+  {
+   "name": "das_retry_transient_placeholders",
    "ret": "void",
    "reason": "no corpus VA (host-harness or standalone-only alt-entry)"
   }
