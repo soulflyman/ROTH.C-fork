@@ -105,7 +105,7 @@ Subscribe to the host's seam callbacks — events at the boundary between the en
 - `on_scancode` (**TICK_ISR** context): every keystroke *before* the engine sees it. Return the
   (possibly rewritten) scancode, or `0` to swallow it. Keep it instant; no engine calls here.
 - `on_mouse_poll` (**GAME**): inspect/modify the mouse state each time the engine polls it.
-- `on_frame_game` (**GAME**): once per engine tick on the game thread; engine calls are legal.
+- `on_frame_game` (**GAME**): at most once per engine tick, always on the game thread proper (never from inside the SIGALRM tick: the host skips it when the mouse is polled by the tick heartbeat), so engine calls — including blocking modal UI such as the inspect popup — are legal. `on_mouse_poll` can still fire from the tick (cursor update): do not call the engine there.
 - `on_compose_tick` (**TICK_ISR**): the finished frame's pixel buffer just before display — write
   palette-index pixels directly to draw on top. No engine calls.
 

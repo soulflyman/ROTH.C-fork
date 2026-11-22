@@ -62,3 +62,12 @@ injected Esc closes it and returns normally; ticks keep running. Note `roth-inje
 in-process (SDL) build any more (private shm) — use gdb (`set var g_shm->key_ring[...]`) to test input. Changes made:
 Esc now arms the engine's exit latch from the plugin's `on_scancode`; the main thread force-exits 3 s after the window
 closes if the game thread is wedged; `examine` logs its progress (`label` / `calling the popup`) to pinpoint a hang.
+
+### Examine popup hang: root cause (2026-11-23)
+
+Watchdog stack of the hang: `alarm_handler -> shm_tick -> vsync_timer_tick -> update_software_cursor -> poll_mouse_motion ->
+frame_relay -> frame_pump -> on_frame_game -> examine -> load_dbase300_resource_at_offset -> gdv_*`. In gameplay the engine's
+tick heartbeat polls the mouse for the software cursor, and `frame_pump` ran the plugins' `on_frame_game` from there — i.e. *inside
+the SIGALRM handler*. A modal popup in the handler waits for ticks that cannot arrive while the handler runs: deadlock, process
+unkillable. Fix: `frame_relay` skips `frame_pump` while `roth_in_tick_isr()`; `on_frame_game` now runs only from the game loop's own
+mouse polls. (Also removes a class of engine calls racing the game thread from signal context.)

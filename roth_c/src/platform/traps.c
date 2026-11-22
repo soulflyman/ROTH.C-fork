@@ -2078,8 +2078,12 @@ static void shm_tick(void)
  * back-ends can run it. It does NO CPU segment-register work: on i386 signal delivery drops the host
  * TLS selectors, so alarm_handler restores fs/gs around this call, but the body itself must stay
  * segment-agnostic for back-ends whose thread selectors are already correct. */
+static volatile int g_in_tick_isr;
+int roth_in_tick_isr(void) { return g_in_tick_isr; }
+
 void roth_tick_isr(void)
 {
+    g_in_tick_isr = 1;
     /* imgfree-boot: force the always-interactive surrogate on so the shm_tick below drives the
      * lifted C ISR bodies directly this tick. Dead until roth_boot sets g_standalone_boot (nothing does
      * yet); idempotent belt-and-suspenders with roth_boot()'s own boot-time set. */
@@ -2087,6 +2091,7 @@ void roth_tick_isr(void)
         g_os_interactive = 1;
 
     shm_tick();   /* honors g_shm->quit -> _exit(0) internally */
+    g_in_tick_isr = 0;
 }
 
 /* The POSIX interval-timer tick handler: restores the host TLS selectors, runs the portable tick body,

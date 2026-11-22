@@ -446,6 +446,8 @@ static void report(void)
  * (0x90bcc, the project's timing law) so a plugin's on_frame_game fires exactly once per tick. This
  * re-point lives ENTIRELY in the image-free lane (boot.c set g_os_soft_int=host_soft_int; we chain it):
  * the shared standalone_hooks.c / host_soft_int stay byte-identical, so the trap host is untouched. */
+int roth_in_tick_isr(void);   /* traps.c */
+
 static void frame_pump(void)
 {
     /* Equality compare = wrap-safe on the 16-bit counter (once-per-tick gate; item_grabber idiom). */
@@ -483,7 +485,13 @@ static uint32_t frame_relay(uint8_t vec, regs_t *io)
     uint32_t r = g_inner_soft_int(vec, io);     /* the real int21/int10/int31/int33 host body first */
     if (vec == 0x33) {                          /* mouse poll: game-thread, per-frame chokepoint */
         dispatch_mouse_poll(ax_in, io);         /* on_mouse_poll(GAME): per-poll, engine calls legal */
-        frame_pump();                           /* on_frame_game(GAME): deduped on the 0x90bcc tick */
+        /* In gameplay the engine's tick heartbeat (vsync_timer_tick -> update_software_cursor -> poll_mouse_motion)
+         * polls the mouse from INSIDE the SIGALRM tick. on_frame_game is a game-thread callback (engine calls, even
+         * blocking modal UI, are legal), so it must never run in tick context: a modal popup there waits for ticks
+         * that cannot arrive while the tick handler is still running (hang, process unkillable). Skip it; the game
+         * loop's own mouse poll fires it. */
+        if (!roth_in_tick_isr())
+            frame_pump();                       /* on_frame_game(GAME): deduped on the 0x90bcc tick */
     }
     return r;
 }
