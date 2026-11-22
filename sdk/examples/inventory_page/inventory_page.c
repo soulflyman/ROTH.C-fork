@@ -390,9 +390,11 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     if (g_inspecting) {
         /* Esc ends the popup deterministically: arm the engine's own exit latch (checked every frame by the popup's
          * callback and by its modal loop) instead of relying on the key reaching the engine ring. */
-        if (!is_break && make == 0x01) {   /* Esc only closes the popup: the engine must not also see it (it would open the game menu) */
+        if (!is_break && (make == 0x01 || make == 0x39 || make == (uint8_t)g_inspect_key)) {
+            /* Esc / Space only close the popup: the engine must not also see them (Esc would open the game menu, Space is
+             * the jump key and would fire one jump when the popup hands the game back). */
             api->game_ram->set_u32(VA_PANEL_OPEN + 8u, 1);
-            g_swallowed[0x01] = 1;
+            g_swallowed[make] = 1;
             return 0;
         }
         if (is_break && g_swallowed[make]) { g_swallowed[make] = 0; return 0; }
