@@ -51,8 +51,9 @@ install yourself.
    | `inventory_page`   | a single-page inventory overlay opened with the engine's inventory key, with list/tile views and an examine popup (Space) |
 
    **Requirement:** the key-binding rows of the F11 menu build on the `keybinds` mod from
-   [`roth-mods`](https://github.com/beyond-the-ire/roth-mods), which is *not* part of the bundle. Install it as
-   `mods/keybinds/` next to the others if you want to rebind keys from the menu.
+   [`roth-mods`](https://github.com/beyond-the-ire/roth-mods). The GitHub release bundles it (`mods/keybinds/`); a
+   bundle you build locally with `make dist` does not, so add it yourself (build `keybinds/` from that repo with
+   `make ROTH_SDK=<this repo>/sdk` and copy `plugin.so` + `keybinds.cfg` to `mods/keybinds/`).
 
    The bundle build compiles them from `sdk/examples/`; to build a single mod yourself, run `make` in its directory
    (needs `gcc` with 32-bit support) and install it as `<game>/mods/<name>/plugin.so`, see

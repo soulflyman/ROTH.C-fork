@@ -1,8 +1,13 @@
-# Release: on a version tag (v*), build and attach two artifacts to a GitHub Release:
-#   1. the player bundle  — ROTH.C-<tag>-linux-x86.tar.gz (drop into the game's ROTH
+# Release: on a version tag (v*), build and attach to a GitHub Release:
+#   1. the Linux player bundle   — ROTH.C-<tag>-linux-x86.tar.gz (drop into the game's ROTH
 #      directory next to the game files and run ./roth; no other setup)
-#   2. the SDK tarball    — roth-sdk-<tag>.tar.gz for mod authors (headers, schemas,
+#   2. the Windows player bundle — ROTH.C-<tag>-windows-x86.zip
+#   3. the SDK tarball           — roth-sdk-<tag>.tar.gz for mod authors (headers, schemas,
 #      the modding guide, and the teaching examples)
+# Each player bundle ships the first-party mods from sdk/examples (built by `make dist`) plus the
+# `keybinds` mod, which lives in beyond-the-ire/roth-mods and is cloned (pinned) and built here
+# against this tree's SDK. macOS is not built: the engine is a 32-bit x86 program with fixed low
+# addresses, and macOS has no 32-bit runtime and no host layer (platform/sys has posix + win32 only).
 name: release
 
 on:
@@ -11,6 +16,12 @@ on:
 
 permissions:
   contents: write   # create the release + upload assets
+
+env:
+  # The keybinds mod (F11 key-binding rows depend on it). Pinned for reproducible releases;
+  # bump the SHA to pick up upstream changes.
+  ROTH_MODS_REPO: beyond-the-ire/roth-mods
+  ROTH_MODS_REF: e94839b67ae98558627de9ef2a34573b8776e61d
 
 jobs:
   release:
@@ -48,6 +59,20 @@ jobs:
 
       - name: Build the release bundle
         run: make -C roth_c dist
+
+      - name: Fetch the keybinds mod from roth-mods
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ROTH_MODS_REPO }}
+          ref: ${{ env.ROTH_MODS_REF }}
+          path: roth-mods
+
+      - name: Build keybinds and add it to the bundle
+        run: |
+          set -e
+          make -C roth-mods/keybinds ROTH_SDK="$GITHUB_WORKSPACE/sdk"
+          mkdir -p roth_c/dist/mods/keybinds
+          cp roth-mods/keybinds/plugin.so roth-mods/keybinds/keybinds.cfg roth_c/dist/mods/keybinds/
 
       - name: Package the artifacts
         run: |
@@ -97,6 +122,20 @@ jobs:
 
       - name: Build the Windows bundle
         run: make -C roth_c CROSS=mingw dist-win
+
+      - name: Fetch the keybinds mod from roth-mods
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ROTH_MODS_REPO }}
+          ref: ${{ env.ROTH_MODS_REF }}
+          path: roth-mods
+
+      - name: Build keybinds (Windows) and add it to the bundle
+        run: |
+          set -e
+          make -C roth-mods/keybinds CROSS=mingw ROTH_SDK="$GITHUB_WORKSPACE/sdk"
+          mkdir -p roth_c/dist-win/mods/keybinds
+          cp roth-mods/keybinds/plugin.dll roth-mods/keybinds/keybinds.cfg roth_c/dist-win/mods/keybinds/
 
       - name: Package the Windows zip
         run: |
