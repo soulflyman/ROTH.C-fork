@@ -68,6 +68,8 @@ STARTER_SET = [
     "render_weapon_hud",            # slot 26  0x24165  redraw the weapon HUD panel
     # --- v0.9 (inventory overlay: examine) — the engine's item detail view (GDV close-up / document popup) ---
     "load_dbase300_resource_at_offset",  # slot 27  0x196b9  modal inspect popup: (offset, loop flag, record, hov entry)
+    # --- v0.10 (inventory examine popup title) ---
+    "format_inventory_item_label",   # slot 28  0x1c0b1  fill the item label buffer (0x8105e) for (item id, qty)
     # APPEND new exposures HERE — never above, never reorder (slot order is ABI).
 ]
 

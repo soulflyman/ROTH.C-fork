@@ -4,7 +4,7 @@
   "source": "roth_c/src/engine/engine.h",
   "note": "Mechanically extracted typed signatures for every engine.h prototype that resolves to a canonical VA/id. exposed/curated = the exposed set; exposed_slot = the engine-call-table slot (THE EXPOSED-ORDER LAW: slot order = exposure order, append-only forever \u2014 see STARTER_SET in tools/sdk_extract_signatures.py).",
   "count": 1162,
-  "exposed_count": 28,
+  "exposed_count": 29,
   "prototypes_parsed": 1181,
   "skipped_count": 19
  },
@@ -4866,8 +4866,9 @@
    "subsystem": "inventory",
    "klass": "engine",
    "resolve": "name",
-   "curated": false,
-   "exposed": false
+   "curated": true,
+   "exposed": true,
+   "exposed_slot": 28
   },
   {
    "id": 115043,

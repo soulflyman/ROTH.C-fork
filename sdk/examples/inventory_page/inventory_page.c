@@ -157,6 +157,9 @@ static const char *const BG_STYLE_NAMES[3] = { "SOLID", "SEE-THROUGH", "NONE" };
 #define VA_DBASE100_BASE    0x81e1cu  /* runtime ptr to the loaded DBASE100 (record = base + file offset) */
 #define VA_DAS_CACHE_POOL   0x85c3cu  /* g_das_cache_heap_handle: runtime ptr to the DAS cache pool */
 #define VA_ARCHIVE_PATH     0x81f06u  /* item-icon archive file name (the engine opens it for icons) */
+#define VA_PANEL_OPEN       0x7fec4u  /* g_inventory_panel_open: the popup's modal loop ends as soon as this is 0 */
+#define VA_MOUSE_REL_MODE   0x7e8d0u
+#define VA_NAME_FLAG        0x8105cu  /* byte: "draw the item name" flag; the text lives at 0x8105e */
 #define VA_PANEL_ANCHOR_X   0x80b24u
 #define VA_PANEL_ANCHOR_Y   0x80b28u
 #define VA_SCREEN_PITCH     0x85498u
@@ -397,6 +400,14 @@ static void on_mouse_poll(const struct roth_api_v1 *api, struct roth_mouse_poll_
 {
     (void)api;
     if (g_state == ST_CLOSED || g_inspecting) return;
+    if (mp->ax == 0x0003) {   /* right button press (edge) = examine the selected item, like the native inventory */
+        static int prev_rb;
+        int rb = (mp->ebx & 2) != 0;
+        const list_t *l = &g_list[g_list_front];
+        if (rb && !prev_rb && g_sel >= 0 && g_sel < l->n && !l->e[g_sel].is_header)
+            g_inspect_request = l->e[g_sel].slot + 1;
+        prev_rb = rb;
+    }
     if (mp->ax == 0x000b) { mp->ecx &= ~0xffffu; mp->edx &= ~0xffffu; }
     else if (mp->ax == 0x0003) { mp->ebx &= ~0xffffu; }
 }
@@ -434,10 +445,53 @@ static void load_icons(const struct roth_api_v1 *api)
     if (arch) api->engine->dos_close_handle(arch);
 }
 
+static void examine(const struct roth_api_v1 *api, int id, uint32_t slotptr)
+{
+    const struct roth_game_ram_api_v1 *gr = api->game_ram;
+    uint32_t dbase = gr->u32(VA_DBASE100_BASE);
+    if (id <= 0 || id > MAX_ITEM_ID || !g_items[id].valid || !dbase) return;
+    const item_info_t *it = &g_items[id];
+    if (it->doc == 0) { snprintf(g_status, sizeof g_status, "NOTHING TO EXAMINE"); return; }
+    /* the popup centres itself on these two panel-origin globals (compute_viewport_half_extents) */
+    gr->set_u32(VA_PANEL_ANCHOR_Y, gr->u32(VA_SCREEN_HEIGHT) >> 1);
+    gr->set_u32(VA_PANEL_ANCHOR_X, (gr->u32(VA_SCREEN_PITCH) - 0x130u) >> 1);
+    static uint32_t hov[3];   /* {close-up icon handle, carried slot ptr, item id} — game-side 12-byte entry */
+    hov[0] = 0;
+    uint32_t pool = gr->u32(VA_DAS_CACHE_POOL), arch = 0;
+    void *path = gr->to_ptr(VA_ARCHIVE_PATH);
+    if (pool && path && (arch = api->engine->dos_open_file((uint32_t)(uintptr_t)path, 0)) != 0) {
+        hov[0] = api->engine->load_item_icon_resource((uint32_t)id, arch);   /* close-up image; 0 = none */
+        api->engine->dos_close_handle(arch);
+    }
+    hov[1] = slotptr;
+    hov[2] = (uint32_t)id;
+    fprintf(stderr, "[mods:_inventory] examine id=%d doc=0x%x loop=%u rec=0x%x active=%u\n", id, it->doc, it->loop,
+            (unsigned)(dbase + it->recoff), (unsigned)gr->u32(0x7fec0u));
+    /* the engine runs this popup inside its inventory screen: the modal loop exits at once unless the panel latch
+     * is set, and the cursor must be visible/absolute. Mirror that state for the duration, then restore it. */
+    uint32_t save_panel = gr->u32(VA_PANEL_OPEN);
+    uint8_t save_move = gr->u8(VA_PLAYER_MOVEMENT_ENABLED), save_rel = gr->u8(VA_MOUSE_REL_MODE);
+    api->engine->format_inventory_item_label((uint32_t)id, 0);   /* item name -> title (0x8105e) */
+    gr->set_u8(VA_NAME_FLAG, 1);
+    gr->set_u32(VA_PANEL_OPEN, 1);
+    gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, 3);
+    gr->set_u8(VA_MOUSE_REL_MODE, 0);
+    g_inspecting = 1;
+    uint32_t r = api->engine->load_dbase300_resource_at_offset((it->doc << 3) + 4u, it->loop, dbase + it->recoff, (uint32_t)(uintptr_t)hov);
+    g_inspecting = 0;
+    gr->set_u32(VA_PANEL_OPEN, save_panel);
+    gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, save_move);
+    gr->set_u8(VA_MOUSE_REL_MODE, save_rel);
+    fprintf(stderr, "[mods:_inventory] examine returned 0x%x active=%u\n", (unsigned)r, (unsigned)gr->u32(0x7fec0u));
+    if (hov[0]) api->engine->pool_free_handle((uint32_t *)(uintptr_t)pool, (uint32_t *)(uintptr_t)hov[0]);
+    g_status[0] = '\0';
+}
+
 static void on_frame_game(const struct roth_api_v1 *api)
 {
     const struct roth_game_ram_api_v1 *gr = api->game_ram;
     static int was_open;
+    if (g_inspecting) return;   /* re-entered from the popup's own mouse polls: the engine owns the screen */
     if (g_state != ST_CLOSED && !getenv("ROTH_INVENTORY_FORCE_OPEN") &&
         gr->u8(VA_PLAYER_MOVEMENT_ENABLED) != 1) g_state = ST_CLOSED;
     if (g_state == ST_CLOSED) { was_open = 0; return; }
@@ -466,28 +520,14 @@ static void on_frame_game(const struct roth_api_v1 *api)
     if (req) {
         g_inspect_request = 0;
         int id = (int16_t)gr->u16(VA_INV_ARRAY + (uint32_t)(req - 1) * 4u);
-        uint32_t dbase = gr->u32(VA_DBASE100_BASE);
-        if (id <= 0 || id > MAX_ITEM_ID || !g_items[id].valid || !dbase) return;
-        const item_info_t *it = &g_items[id];
-        if (it->doc == 0) { snprintf(g_status, sizeof g_status, "NOTHING TO EXAMINE"); return; }
-        /* the popup centres itself on these two panel-origin globals (compute_viewport_half_extents) */
-        gr->set_u32(VA_PANEL_ANCHOR_Y, gr->u32(VA_SCREEN_HEIGHT) >> 1);
-        gr->set_u32(VA_PANEL_ANCHOR_X, (gr->u32(VA_SCREEN_PITCH) - 0x130u) >> 1);
-        static uint32_t hov[3];   /* {close-up icon handle, carried slot ptr, item id} — game-side 12-byte entry */
-        hov[0] = 0;
-        uint32_t pool = gr->u32(VA_DAS_CACHE_POOL), arch = 0;
-        void *path = gr->to_ptr(VA_ARCHIVE_PATH);
-        if (pool && path && (arch = api->engine->dos_open_file((uint32_t)(uintptr_t)path, 0)) != 0) {
-            hov[0] = api->engine->load_item_icon_resource((uint32_t)id, arch);   /* close-up image; 0 = none */
-            api->engine->dos_close_handle(arch);
-        }
-        hov[1] = (uint32_t)((uintptr_t)gr->to_ptr(VA_INV_ARRAY) + (uintptr_t)(req - 1) * 4u);
-        hov[2] = (uint32_t)id;
-        g_inspecting = 1;
-        api->engine->load_dbase300_resource_at_offset((it->doc << 3) + 4u, it->loop, dbase + it->recoff, (uint32_t)(uintptr_t)hov);
-        g_inspecting = 0;
-        if (hov[0]) api->engine->pool_free_handle((uint32_t *)(uintptr_t)pool, (uint32_t *)(uintptr_t)hov[0]);
-        g_status[0] = '\0';
+        examine(api, id, (uint32_t)((uintptr_t)gr->to_ptr(VA_INV_ARRAY) + (uintptr_t)(req - 1) * 4u));
+    }
+    static int auto_id = -1, frames;      /* dev: ROTH_INVENTORY_AUTO_INSPECT=<id> examines once at boot (headless repro) */
+    if (auto_id == -1) auto_id = getenv("ROTH_INVENTORY_AUTO_INSPECT") ? atoi(getenv("ROTH_INVENTORY_AUTO_INSPECT")) : 0;
+    if (auto_id > 0 && ++frames == (getenv("ROTH_INVENTORY_AUTO_FRAME") ? atoi(getenv("ROTH_INVENTORY_AUTO_FRAME")) : 150)) {
+        fprintf(stderr, "[mods:_inventory] auto-inspect id %d\n", auto_id);
+        examine(api, auto_id, 0);
+        fprintf(stderr, "[mods:_inventory] auto-inspect returned\n");
     }
 }
 

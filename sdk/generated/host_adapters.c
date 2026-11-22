@@ -104,6 +104,7 @@ static const struct roth_engine_api_v1 ENG = {
     .activate_weapon_item = activate_weapon_item,
     .render_weapon_hud = render_weapon_hud,
     .load_dbase300_resource_at_offset = load_dbase300_resource_at_offset,
+    .format_inventory_item_label = format_inventory_item_label,
 };
 
 /* host services on the top-level table: provided by the host loader (extern here — the

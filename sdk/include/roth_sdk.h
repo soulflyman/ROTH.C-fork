@@ -21,9 +21,9 @@ extern "C" {
 
 /* ---- versions ------------------------------------------------------------ */
 #define ROTH_SDK_MAJOR 0
-#define ROTH_SDK_MINOR 9
+#define ROTH_SDK_MINOR 10
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 9
+#define ROTH_ABI_MINOR 10
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
@@ -1229,6 +1229,7 @@ struct roth_engine_api_v1 {
     void (ROTH_CDECL *activate_weapon_item)(uint32_t, uint32_t);  /* id 0x184ab */
     void (ROTH_CDECL *render_weapon_hud)(uint32_t, uint32_t);  /* id 0x24165 */
     uint32_t (ROTH_CDECL *load_dbase300_resource_at_offset)(uint32_t, uint32_t, uint32_t, uint32_t);  /* id 0x196b9 */
+    uint32_t (ROTH_CDECL *format_inventory_item_label)(uint32_t, uint32_t);  /* id 0x1c0b1 */
 };
 
 /* ---- game_ram accessors: bounded little-endian --------------------------- */
@@ -1393,6 +1394,7 @@ ROTH_PLUGIN_EXPORT const struct roth_plugin_info_v1 *roth_plugin_query_v1(void);
 #define ROTH_CALL_activate_weapon_item(api, ...) ((api)->engine->activate_weapon_item(__VA_ARGS__))
 #define ROTH_CALL_render_weapon_hud(api, ...) ((api)->engine->render_weapon_hud(__VA_ARGS__))
 #define ROTH_CALL_load_dbase300_resource_at_offset(api, ...) ((api)->engine->load_dbase300_resource_at_offset(__VA_ARGS__))
+#define ROTH_CALL_format_inventory_item_label(api, ...) ((api)->engine->format_inventory_item_label(__VA_ARGS__))
 
 #ifdef __cplusplus
 }

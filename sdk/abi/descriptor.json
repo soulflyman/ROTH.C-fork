@@ -2,9 +2,9 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 9,
+ "sdk_minor": 10,
  "abi_major": 0,
- "abi_minor": 9,
+ "abi_minor": 10,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
@@ -88,7 +88,7 @@
    ]
   },
   "roth_engine_api_v1": {
-   "size": 112,
+   "size": 116,
    "fields": [
     {
      "slot": 0,
@@ -526,6 +526,21 @@
      "params": [
       "uint32_t",
       "uint32_t",
+      "uint32_t",
+      "uint32_t"
+     ]
+    },
+    {
+     "slot": 28,
+     "name": "format_inventory_item_label",
+     "id": 114865,
+     "va": "0x1c0b1",
+     "signature_id": 114865,
+     "offset": 112,
+     "size": 4,
+     "kind": "fnptr",
+     "ret": "uint32_t",
+     "params": [
       "uint32_t",
       "uint32_t"
      ]
@@ -1424,6 +1439,21 @@
    "params": [
     "uint32_t",
     "uint32_t",
+    "uint32_t",
+    "uint32_t"
+   ]
+  },
+  {
+   "slot": 28,
+   "name": "format_inventory_item_label",
+   "id": 114865,
+   "va": "0x1c0b1",
+   "signature_id": 114865,
+   "offset": 112,
+   "size": 4,
+   "kind": "fnptr",
+   "ret": "uint32_t",
+   "params": [
     "uint32_t",
     "uint32_t"
    ]
