@@ -106,6 +106,8 @@ static void push_key(uint8_t code)
     g_shm->key_head++;
 }
 
+extern volatile int32_t g_focus_parked;      /* engine/game_core.c */
+
 static void send_key(SDL_Scancode s, int down)
 {
     int code = sdl_to_set1(s);
@@ -410,7 +412,8 @@ int sdl_present_run(int scale, int filter)
     if (sens <= 0) sens = 2.0;
     SDL_SetWindowRelativeMouseMode(win, true);
     int grabbed = 1, focused = 1;
-    uint32_t swallow_btn = 0;                 /* buttons of the click that re-grabbed the window: ignored until released */
+    uint32_t swallow_btn = 0;
+    Uint64 gain_tick = 0;                 /* buttons of the click that re-grabbed the window: ignored until released */
     static uint8_t held_keys[SDL_SCANCODE_COUNT];
     double ax = 0, ay = 0; /* fractional delta accumulators */
 
@@ -468,6 +471,8 @@ int sdl_present_run(int scale, int filter)
                 break;
             case SDL_EVENT_MOUSE_BUTTON_DOWN:
             case SDL_EVENT_MOUSE_BUTTON_UP: {
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && grabbed && gain_tick && SDL_GetTicks() - gain_tick < 300)
+                    swallow_btn |= SDL_BUTTON_MASK(e.button.button);   /* the focusing click arrived after FOCUS_GAINED */
                 if (!grabbed && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                     SDL_SetWindowRelativeMouseMode(win, true); /* click to re-grab */
                     grabbed = 1;
@@ -498,6 +503,13 @@ int sdl_present_run(int scale, int filter)
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
                 focused = 1;
                 g_shm->focus_lost = 0;
+                if (!grabbed) {                 /* one click is enough: regrab now, and ignore the focusing click itself */
+                    SDL_SetWindowRelativeMouseMode(win, true);
+                    grabbed = 1;
+                    float gx, gy;
+                    swallow_btn |= SDL_GetMouseState(&gx, &gy);
+                    gain_tick = SDL_GetTicks();
+                }
                 break;
             default:
                 break;
@@ -598,6 +610,13 @@ int sdl_present_run(int scale, int filter)
                     for (int y = 0; y < ph; y++)
                         memcpy(rgb + (size_t)(py0 + y) * w + px0, pv_rgb + (size_t)y * pw, (size_t)pw * 4);
                 }
+            }
+        }
+        if (g_focus_parked) {                            /* paused by focus loss: grey the whole view like the native pause screens */
+            for (int i = 0; i < n; i++) {
+                uint32_t c = rgb[i];
+                uint32_t y = (((c >> 16) & 0xff) * 77 + ((c >> 8) & 0xff) * 150 + (c & 0xff) * 29) >> 8;
+                rgb[i] = 0xff000000u | (y << 16) | (y << 8) | y;
             }
         }
         if (cur_k == 2) {

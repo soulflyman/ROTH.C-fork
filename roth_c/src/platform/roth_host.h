@@ -199,5 +199,6 @@ void alarm_handler(int sig, siginfo_t *si, void *ucv);
 extern volatile int32_t g_opt_headbob_pct;
 extern volatile int32_t g_opt_pause_on_focus_loss;
 extern volatile uint32_t *g_focus_lost_flag;
+extern volatile int32_t g_focus_parked;
 
 #endif

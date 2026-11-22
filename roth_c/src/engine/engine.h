@@ -62,6 +62,7 @@ extern void (*g_game_loop_hook)(void);
 extern volatile int32_t g_opt_headbob_pct;
 extern volatile int32_t g_opt_pause_on_focus_loss;
 extern volatile uint32_t *g_focus_lost_flag;
+extern volatile int32_t g_focus_parked;   /* 1 while focus_pause_poll holds gameplay parked (the presenter greys the view) */
 
 /* Host hook: drive an `out dx,al` byte port write from a lift, against the host's port emulation (the
  * same path the trap dispatch runs for the original's `out` instruction). Used by the GDV codec's
