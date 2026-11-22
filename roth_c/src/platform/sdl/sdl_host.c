@@ -588,16 +588,21 @@ int sdl_present_run(int scale, int filter)
         SDL_FRect lrect = { 0, 0, 0, 0 };   /* where the image lands in window pixels (letterbox / integer scale) */
         if (!SDL_GetRenderLogicalPresentationRect(ren, &lrect) || lrect.h <= 0) { lrect.h = (float)h; }
         float out_scale = lrect.h / (float)h;                 /* window pixels per published row */
-        if (cur_scaler == SCALER_SHARP) {
-            /* nearest-prescale by an integer, then let the GPU filter that down: crisp texels, smooth edges */
-            int n = (int)out_scale + (out_scale > (float)(int)out_scale ? 1 : 0);
+        if (cur_scaler == SCALER_SHARP || cur_scaler == SCALER_SCALE2X) {
+            /* nearest-prescale by an integer, then let the GPU filter that down: crisp texels, smooth edges. scale2x needs
+             * this too: its 2x texture is shown at a non-integer factor (e.g. 0.92x at a 1.83x window), and plain nearest
+             * sampling there drops/duplicates rows and columns irregularly = uneven lines. */
+            float ts = out_scale / (float)cur_k;                  /* window pixels per texture pixel */
+            int n = (int)ts + (ts > (float)(int)ts ? 1 : 0);
             if (n < 1) n = 1;
             if (n > 4) n = 4;
-            if (!tgt || tgt_w != w * n || tgt_h != h * n) {
+            int tw = w * cur_k * n, th = h * cur_k * n;
+            while (n > 1 && (tw > 4096 || th > 4096)) { n--; tw = w * cur_k * n; th = h * cur_k * n; }
+            if (!tgt || tgt_w != tw || tgt_h != th) {
                 if (tgt) SDL_DestroyTexture(tgt);
-                tgt = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, w * n, h * n);
+                tgt = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, tw, th);
                 if (tgt) SDL_SetTextureScaleMode(tgt, SDL_SCALEMODE_LINEAR);
-                tgt_w = w * n; tgt_h = h * n;
+                tgt_w = tw; tgt_h = th;
             }
             if (tgt && SDL_SetRenderTarget(ren, tgt)) {
                 SDL_RenderTexture(ren, tex, NULL, NULL);
