@@ -8,6 +8,11 @@ function by function into C that has been verified against the original executab
 wrapped in a native host (SDL3) so it runs as an ordinary desktop application: windowed, with
 working mouse capture, music, and sound. No DOSBox required!
 
+> **This is a fork** of [`beyond-the-ire/ROTH.C`](https://github.com/beyond-the-ire/ROTH.C) with a reworked display
+> pipeline (upscalers, CRT look, widescreen modes, AA), focus/input handling, head-bob control and extended
+> settings/inventory mods. See [`docs/FORK_SUMMARY.md`](docs/FORK_SUMMARY.md) for everything that differs from upstream.
+> The release link below still points to the upstream project until this fork publishes its own.
+
 The game's content is not included; you simply take a couple files from this project and drop it
 into your existing Realms of the Haunting installation folder and you can play.
 
