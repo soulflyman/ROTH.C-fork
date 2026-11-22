@@ -70,6 +70,8 @@ STARTER_SET = [
     "load_dbase300_resource_at_offset",  # slot 27  0x196b9  modal inspect popup: (offset, loop flag, record, hov entry)
     # --- v0.10 (inventory examine popup title) ---
     "format_inventory_item_label",   # slot 28  0x1c0b1  fill the item label buffer (0x8105e) for (item id, qty)
+    # --- v0.11 (overlay pause look) ---
+    "build_view_grayscale_lut",     # slot 29  0x12be2  (re)build the palette->gray LUT the native inventory background uses
     # APPEND new exposures HERE — never above, never reorder (slot order is ABI).
 ]
 

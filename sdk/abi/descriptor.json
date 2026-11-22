@@ -2,9 +2,9 @@
  "schema": "roth-sdk/abi_descriptor/v1",
  "note": "Machine ABI descriptor: i386 struct field offsets/sizes, API-table slot order, and signature ids. tools/sdk_check.py diffs this against sdk/abi/released/ and enforces the bump policy (identical=ok, append-only=minor, otherwise=major).",
  "sdk_major": 0,
- "sdk_minor": 10,
+ "sdk_minor": 11,
  "abi_major": 0,
- "abi_minor": 10,
+ "abi_minor": 11,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
@@ -88,7 +88,7 @@
    ]
   },
   "roth_engine_api_v1": {
-   "size": 116,
+   "size": 120,
    "fields": [
     {
      "slot": 0,
@@ -544,6 +544,18 @@
       "uint32_t",
       "uint32_t"
      ]
+    },
+    {
+     "slot": 29,
+     "name": "build_view_grayscale_lut",
+     "id": 76770,
+     "va": "0x12be2",
+     "signature_id": 76770,
+     "offset": 116,
+     "size": 4,
+     "kind": "fnptr",
+     "ret": "void",
+     "params": []
     }
    ]
   },
@@ -1457,6 +1469,18 @@
     "uint32_t",
     "uint32_t"
    ]
+  },
+  {
+   "slot": 29,
+   "name": "build_view_grayscale_lut",
+   "id": 76770,
+   "va": "0x12be2",
+   "signature_id": 76770,
+   "offset": 116,
+   "size": 4,
+   "kind": "fnptr",
+   "ret": "void",
+   "params": []
   }
  ],
  "game_ram_table": [

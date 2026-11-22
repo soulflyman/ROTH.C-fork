@@ -238,6 +238,30 @@ static void load_item_data(const char *game_dir)
     g_items_loaded = 1;
 }
 
+/* ---- grayscale background (like the native inventory): desaturate the 3D view at compose time ---- */
+static int32_t g_gray_bg = 1;                                /* registered BOOL */
+#define VA_GRAY_LUT       0x7f254u
+#define VA_GRAY_LUT_VALID 0x7f354u
+#define VA_VIEW_W 0x85cd8u
+#define VA_VIEW_H 0x85cdcu
+#define VA_VIEW_X 0x85ce0u
+#define VA_VIEW_Y 0x85ce4u
+#define VA_HIRES_DOUBLE 0x90cbdu
+
+static void gray_view(const struct roth_api_v1 *api, uint8_t *px, uint32_t w, uint32_t h)
+{
+    const struct roth_game_ram_api_v1 *gr = api->game_ram;
+    const uint8_t *lut = (const uint8_t *)gr->to_ptr(VA_GRAY_LUT);
+    if (!lut || !gr->u8(VA_GRAY_LUT_VALID)) return;
+    uint32_t vx = gr->u32(VA_VIEW_X), vy = gr->u32(VA_VIEW_Y), vw = gr->u32(VA_VIEW_W), vh = gr->u32(VA_VIEW_H);
+    if (gr->u8(VA_HIRES_DOUBLE)) { vy *= 2; vh *= 2; }
+    if (vx > w || vy > h || vw > w - vx || vh > h - vy) return;
+    for (uint32_t y = vy; y < vy + vh; y++) {
+        uint8_t *row = px + (size_t)y * w + vx;
+        for (uint32_t x = 0; x < vw; x++) row[x] = lut[row[x]];
+    }
+}
+
 /* ---- list model (built in on_frame_game, drawn in on_compose_tick; double-buffered) ---- */
 #define MAX_ENTRIES 320
 typedef struct { uint8_t is_header, cat, weapon, equipped, held; int slot; int id; int qty; } entry_t;
@@ -586,7 +610,7 @@ static void on_frame_game(const struct roth_api_v1 *api)
             was_open = 0; return;
         }
     }
-    if (!was_open) { g_sel = 0; g_status[0] = '\0'; was_open = 1; }
+    if (!was_open) { g_sel = 0; g_status[0] = '\0'; was_open = 1; api->engine->build_view_grayscale_lut(); }
     rebuild_list(api);
 
     if (g_view == 1) load_icons(api);
@@ -709,6 +733,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t
 {
     (void)api;
     if (g_state == ST_CLOSED || !px || g_inspecting) return;
+    if (g_gray_bg) gray_view(api, px, w, h);
     const list_t *l = &g_list[g_list_front];
     int s = g_scale, adv = (GLYPH_W + 1) * s, rowh = (GLYPH_H + 4) * s;
 
@@ -808,6 +833,10 @@ static void on_load(const struct roth_api_v1 *api)
         d.struct_size = (uint32_t)sizeof d;
         d.key = "background"; d.label = "BACKGROUND"; d.type = ROTH_SETTING_ENUM; d.value = &g_bg_style;
         d.imin = 0; d.imax = 2; d.istep = 1; d.enum_names = BG_STYLE_NAMES;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d;
+        d.key = "gray_background"; d.label = "GRAY GAME VIEW"; d.type = ROTH_SETTING_BOOL; d.value = &g_gray_bg;
         api->register_setting(&d);
     }
     if (getenv("ROTH_INVENTORY_SCALE")) {
