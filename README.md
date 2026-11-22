@@ -34,6 +34,29 @@ version of the game relies on using a soundfont to determine how to play the MID
 This is the reason why `gm.sf2` needs to be copied over as well. This also means that you're free
 to use your own soundfont without needing specialized MIDI-playing software.
 
+## Using this fork
+
+This fork adds display options, focus handling and a few quality-of-life mods on top of upstream. Most of it
+is available from the command line; the in-game menus come from first-party example mods that you build and
+install yourself.
+
+1. **Get the binary.** Build it from source (see "Building from source" below) and copy
+   the contents of `roth_c/dist/` (the `roth` binary, `libSDL3.so.0`, `gm.sf2`) into your game's `ROTH` directory.
+2. **Build and install the mods you want.** Each example builds with `make` in its directory (needs `gcc` with 32-bit
+   support) and is installed as `<game>/mods/<name>/plugin.so`; see [`sdk/examples/README.md`](sdk/examples/README.md):
+
+   | mod                | gives you                                                                                       |
+   | ------------------ | ----------------------------------------------------------------------------------------------- |
+   | `settings_overlay` | the **F11** settings menu: resolution, upscaler, scanlines, CRT look, anti-aliasing, window mode, head-bob, pause on focus loss, mouselook yaw/pitch, key bindings. Settings persist in `mods/_settings.cfg` |
+   | `mouselook`        | mouse look; **F7** toggles freelook (copy its `mouselook.cfg` along with `plugin.so`)            |
+   | `inventory_page`   | a single-page inventory overlay opened with the engine's inventory key, with list/tile views and an examine popup (Space) |
+
+3. **Or skip the menus** and use command-line switches / environment variables (`--filter`, `--scanlines`, `--crt`,
+   `--window-mode`, `--aa`, `--head-bob`, `--pause-on-focus-loss`, ...). The full table is in
+   [`roth_c/README.md`](roth_c/README.md#running). Values saved by the F11 menu win over the command line.
+
+Everything that differs from upstream is listed in [`docs/FORK_SUMMARY.md`](docs/FORK_SUMMARY.md).
+
 ## ![System banner](images/ROTH.C_system_banner.png)
 
 Linux x86 and Windows are supported. The engine is a 32-bit program by nature, which is kept
