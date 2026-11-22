@@ -447,6 +447,8 @@ static volatile int g_commit_pending = -1;      /* registry index to setting_com
 
 static volatile ui_state_t g_state = ST_CLOSED;
 static volatile int g_overlay_open;
+static int g_paused;                                  /* we parked the game in movement mode 2 (see on_frame_game) */
+static volatile uint8_t g_swallowed[128];             /* makes we swallowed: only their break is swallowed too */
 static int g_sel = 0;
 static int g_scroll_top = 0;
 static volatile int g_vis_rows = VISIBLE_ROWS;   /* rows that actually fit the box; published by on_compose_tick */
@@ -691,17 +693,24 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     uint8_t make = (uint8_t)(sc & 0x7f);
     int is_break = (sc & 0x80) != 0;
 
+    if (is_break) {   /* a release must reach the engine unless we swallowed that key's press (else e.g. Space=jump stays "held") */
+        if (make == g_held) g_held = 0;
+        if (g_swallowed[make]) { g_swallowed[make] = 0; return 0; }
+        return sc;
+    }
+
     if (g_state == ST_CLOSED) {
-        if (!is_break && make == (uint8_t)g_toggle_key &&
+        if (make == (uint8_t)g_toggle_key &&
             api->game_ram->u8(VA_PLAYER_MOVEMENT_ENABLED) == 1) {
             g_state = ST_MAIN;
             g_overlay_open = 1;
+            g_swallowed[make] = 1;
             return 0;
         }
         return sc; /* normal gameplay: untouched passthrough */
     }
 
-    if (is_break) { if (make == g_held) g_held = 0; return 0; }   /* overlay owns focus: swallow releases too (and stop auto-repeat) */
+    g_swallowed[make] = 1;                                         /* overlay owns focus: this press (and its release) is ours */
 
     if (g_state == ST_CAPTURE) {                      /* registry KEY setting waiting for its key */
         if (make == 0x01) {                           /* Esc cancels (so Esc itself cannot be bound) */
@@ -929,9 +938,19 @@ static void on_frame_game(const struct roth_api_v1 *api)
         api->setting_commit((uint32_t)c);
     }
 
-    if (g_overlay_open && !getenv("ROTH_SETTINGS_FORCE_OPEN") && gr->u8(VA_PLAYER_MOVEMENT_ENABLED) != 1) {
-        g_state = ST_CLOSED;
-        g_overlay_open = 0;
+    /* PAUSE (like the native inventory): the engine's main loop only simulates in mode 1 of g_player_movement_enabled;
+     * mode 2 is inert, so park the game there while the overlay is open and restore mode 1 on close — unless something
+     * else changed the mode meanwhile (menu, death, load), in which case the overlay just closes. */
+    {
+        uint8_t mv = gr->u8(VA_PLAYER_MOVEMENT_ENABLED);
+        if (g_overlay_open && !getenv("ROTH_SETTINGS_FORCE_OPEN")) {
+            if (mv == 1 && !g_paused) { gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, 2); g_paused = 1; }
+            else if (mv != (g_paused ? 2 : 1)) { g_state = ST_CLOSED; g_overlay_open = 0; g_paused = 0; }
+        }
+        if (!g_overlay_open && g_paused) {
+            if (mv == 2) gr->set_u8(VA_PLAYER_MOVEMENT_ENABLED, 1);
+            g_paused = 0;
+        }
     }
 
     if (g_state != ST_CLOSED && prev_state == ST_CLOSED) {
