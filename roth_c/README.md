@@ -97,7 +97,7 @@ Common switches:
 | `--filter NAME`     | upscaler: `nearest` (default, crisp), `linear`, `sharp` (sharp-bilinear), `scale2x` (EPX) (`ROTH_FILTER=NAME`) |
 | `--integer-scale`   | scale only by whole multiples, letterboxed (`ROTH_INTEGER_SCALE=1`)                                    |
 | `--scanlines N`     | darken every second output line, strength 0-8, needs >= 2x scale (`ROTH_SCANLINES=N`)                  |
-| `--crt N`           | CRT look 0-2: horizontal scanlines + vignette (scanlines need >= 2x scale; level 2 adds a fine RGB mask at >= 4x) (`ROTH_CRT=N`)   |
+| `--crt N`           | CRT look 0-2: vignette (level 2 adds a fine RGB mask at >= 4x scale); the horizontal lines come from `--scanlines` (`ROTH_CRT=N`)   |
 | `--window-mode M`    | `windowed` (default), `borderless` (fullscreen window at desktop resolution) or `fullscreen` (`ROTH_WINDOW_MODE=M`; `--fullscreen` = borderless; also a WINDOW MODE row in the F11 menu) |
 | `--aa`              | edge anti-aliasing of the 3D view (`ROTH_AA=1`; also a row in the F11 settings menu) - see the note below |
 | `--devmode`         | enable the original's developer keys (e.g. wireframe map, open door); the DEBUG key bindings in the F11 menu need it |

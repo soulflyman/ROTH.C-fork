@@ -648,8 +648,6 @@ int sdl_present_run(int scale, int filter)
             SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
             float ox = lrect.x, oy = lrect.y, lw = lrect.w, lh = lrect.h, sy = lh / (float)h;
             int a_scan = scan_strength * 20;
-            if (crt == 1 && a_scan < 60) a_scan = 60;
-            if (crt == 2 && a_scan < 110) a_scan = 110;
             if (a_scan > 0 && sy >= 2.0f) {           /* horizontal scanlines: the lower third of every source row */
                 for (int y = 0; y < h; y++) {
                     float y0 = (float)(int)(oy + (float)y * sy + 0.5f), y1 = (float)(int)(oy + (float)(y + 1) * sy + 0.5f);
