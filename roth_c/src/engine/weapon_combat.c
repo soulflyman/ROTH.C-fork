@@ -15,6 +15,7 @@
  */
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include "common.h"
 
 /* ======================================================================================
@@ -893,6 +894,7 @@ L_178c1:
     G32(VA_g_weapon_fire_lock) = -1;                            /* set fire lock */
     G32(VA_g_format_flags + 0x3) = (int32_t)((G32(VA_g_selected_item_secondary) != 0 ? 1u : 0u) + 0x101u);
     arm_weapon_fire();             /* arm_weapon_fire 0x17629 [L] */
+    { static unsigned n; if (n < 40) { n++; fprintf(stderr, "[sfx] weapon fire: sound field=%u\n", ecx); fflush(stderr); } }
     if (ecx != 0) {
         /* re-pointed: play_sound_effect 0x27270 [L, audio] direct-C (id=ecx-1, param=0xfcff) */
         play_sound_effect(ecx - 1, 0xfcff);

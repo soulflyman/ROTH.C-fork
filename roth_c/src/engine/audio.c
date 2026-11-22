@@ -22,6 +22,7 @@
 #include "engine.h"
 #include "os_api.h"    /* C2: the os_audio_* SOS-driver service (client re-point) */
 #include <string.h>
+#include <stdio.h>
 
 /* raw flat deref of a runtime pointer + byte offset (stored pointers / staged records — gotcha A4) */
 static inline uint32_t ld32u(uint32_t p) { return *(volatile uint32_t *)(uintptr_t)p; }
@@ -731,14 +732,24 @@ uint32_t start_sound_voice(uint32_t rec, uint32_t userdata)
  * (flow_succ multi-entry: the bodies are defined ONCE as statics, the entries stage the group byte
  * 0x84906 + the static emitter and dispatch — mirroring the original's shared fall-through bodies) */
 
+/* diagnostic: why a one-shot SFX request produced no voice (first 100 only) */
+static void au_sfx_drop(const char *why, uint32_t id, uint32_t param)
+{
+    static unsigned n;
+    if (n >= 100) return;
+    n++;
+    fprintf(stderr, "[sfx] dropped id=%u param=0x%x: %s\n", id, param, why);
+    fflush(stderr);
+}
+
 /* the 0x27283 body shared by play_sound_effect (group 0x6e) + start_persistent_looping_sound (0x20) */
 static uint32_t au_play_effect_body(uint32_t id_in, uint32_t param)
 {
-    if (G32(VA_g_sound_enabled) == 0) return 0;
-    if (G32(VA_g_test_sfx_descriptor + 0x3a) == 0) return 0;
+    if (G32(VA_g_sound_enabled) == 0) { au_sfx_drop("sound disabled", id_in, param); return 0; }
+    if (G32(VA_g_test_sfx_descriptor + 0x3a) == 0) { au_sfx_drop("SFX volume 0", id_in, param); return 0; }
     uint32_t idx = find_free_slot_83ed4();
     uint32_t id  = id_in & 0x7fff;
-    if (idx == 0xffffffffu) return 0;
+    if (idx == 0xffffffffu) { au_sfx_drop("no free record (16 voices busy)", id, param); return 0; }
     uint32_t rec = (uint32_t)GADDR(VA_g_active_sound_handles) + idx * 0x9a;
     st32(rec, (uint32_t)GADDR(VA_g_pending_sound_param + 0x1));                 /* the static "effect" emitter */
     G16(VA_g_pending_sound_param + 0x5) = (uint16_t)id;                         /* its id word (+4) */
@@ -747,7 +758,7 @@ static uint32_t au_play_effect_body(uint32_t id_in, uint32_t param)
     st8(rec + 6, 0);
     st32(rec + 0x22, param);
     uint32_t slot = resolve_sound_sample(id) & 0xff;
-    if (slot == 0xff) { st32(rec, 0); return 0; }
+    if (slot == 0xff) { au_sfx_drop("sample not resolvable", id, param); st32(rec, 0); return 0; }
     st8(rec + 5, (uint8_t)slot);
     start_sound_voice(rec, idx);                  /* EDX leftover = find_free index */
     return rec;
