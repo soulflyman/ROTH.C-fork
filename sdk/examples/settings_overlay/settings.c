@@ -972,7 +972,8 @@ static int topic_of_action(const char *name)
 static void add_row(int *n, int kind, int level, const char *title, const struct roth_setting_v1 *s, uint32_t idx)
 {
     if (*n >= ROWS_MAX) return;
-    if (kind == RK_HEADER && level == 0 && *n > 0 && *n + 1 < ROWS_MAX) {   /* blank line between top-level blocks */
+    if (kind == RK_HEADER && *n > 0 && *n + 1 < ROWS_MAX &&
+        (level == 0 || (level == 1 && g_rows[*n - 1].kind != RK_HEADER))) {   /* blank line between blocks (not right under a header) */
         row_t *b = &g_rows[(*n)++];
         b->kind = RK_NOTE; b->level = 0; b->title = ""; b->s = NULL; b->idx = 0;
     }
