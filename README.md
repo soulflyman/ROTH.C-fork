@@ -11,14 +11,13 @@ working mouse capture, music, and sound. No DOSBox required!
 > **This is a fork** of [`beyond-the-ire/ROTH.C`](https://github.com/beyond-the-ire/ROTH.C) with a reworked display
 > pipeline (upscalers, CRT look, widescreen modes, AA), focus/input handling, head-bob control and extended
 > settings/inventory mods. See [`docs/FORK_SUMMARY.md`](docs/FORK_SUMMARY.md) for everything that differs from upstream.
-> The release link below still points to the upstream project until this fork publishes its own.
 
 The game's content is not included; you simply take a couple files from this project and drop it
 into your existing Realms of the Haunting installation folder and you can play.
 
 ## ![Playing banner](images/ROTH.C_playing_banner.png)
 
-1. Download the latest [Release](https://github.com/beyond-the-ire/ROTH.C/releases/latest) for your system (Windows or Linux).
+1. Download the latest [Release](https://github.com/soulflyman/ROTH.C-fork/releases/latest) for your system (Windows or Linux).
    - **Windows:** `rothc.exe` (the engine), `SDL3.dll`, `gm.sf2` (soundfont), and an empty `mods/` folder.
    - **Linux:** `roth` (the engine), `libSDL3.so.0`, `gm.sf2` (soundfont), and an empty `mods/` folder.
 2. Extract everything into your installation's `ROTH` directory. (this is the one containing `CONFIG.INI` and
