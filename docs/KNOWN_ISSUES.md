@@ -1,5 +1,17 @@
 # Known issues
 
+## Textures turn into flat colour in wide modes (FIXED 2026-11-22)
+
+**Cause:** `build_projection_table` (renderer.c) stores one byte per screen column in the angle->column LUT at 0x8c484 (and
+a backup at 0x8c204). Those arena slots are only 0x288 / 0x280 bytes (<= 640 columns); the DAS loader's current-block
+variables and the `g_das_low_index_bitset` (0x8c740) follow immediately. In the wide modes added on this branch
+(768/800/854/896 x 480) the LUT overran into the bitset, flagging arbitrary texture indices as "unavailable", so they
+rendered as the flat placeholder (most visible in the main-menu backdrop right after the intro). Found with a gdb
+watchpoint on the bitset; reproduced headless (`roth --headless`) with 15 `[das] ... already marked unavailable` lines.
+**Fix:** the two LUTs are now host-owned 1024-byte arrays in renderer.c. After the fix: 0 `[das]` lines, textures intact.
+
+The text below is the earlier investigation (kept for history).
+
 ## Textures occasionally turn into flat colour (open, cause unconfirmed)
 
 **Reported:** 2026-11-22 (two screenshots: half a tabletop; carpet and parts of a wall rendered as a single flat colour).

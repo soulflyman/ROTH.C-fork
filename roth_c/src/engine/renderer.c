@@ -3,6 +3,12 @@
 #include "common.h"   /* GADDR + G8/G16/G32 + shared lift machinery (was inline here) */
 #include <string.h>
 
+/* Angle->column projection LUT (0x8c484) and its backup (0x8c204). The canonical arena slots hold only 0x288/0x280 bytes
+ * (<= 640 columns) and the neighbouring DAS state (current block vars + the 0x8c740 low-index bitset) follows
+ * immediately, so any mode wider than 640 overran them and flagged random textures as "unavailable". Host-owned here. */
+static uint8_t g_proj_lut[1024];
+static uint8_t g_proj_backup[1024];
+
 /* int3 suspend/resume hooks: NULL in the oracle (no live-swap), set by the host's lift_install. */
 void (*g_os_suspend_int3s)(void) = NULL;
 void (*g_os_resume_int3s)(void)  = NULL;
@@ -5463,7 +5469,7 @@ uint32_t render_parallax_sky_columns(uint32_t edi, uint32_t ecx, uint32_t esi, u
 
             e  = edi;                                              /* push edi */
             al = 0;
-            {   uint8_t bl = G8(VA_g_render_column_source_table + colidx);                 /* mov bl,[ebx+0x8c484] */
+            {   uint8_t bl = g_proj_lut[colidx];                 /* mov bl,[ebx+0x8c484] */
                 bx = (uint16_t)((colidx & 0xff00) | bl);
                 bx = (uint16_t)(bx - fC);                          /* sub bx,[ebp+0xc] */
                 bx = (uint16_t)((bx & 0x00ff) | (((uint16_t)f12 & 0xff) << 8)); }  /* mov bh,[ebp+0x12] */
@@ -5536,7 +5542,7 @@ uint32_t render_parallax_sky_columns(uint32_t edi, uint32_t ecx, uint32_t esi, u
 
         e  = edi;                                                  /* push edi (working dest) */
         al = 0;
-        {   uint8_t bl = G8(VA_g_render_column_source_table + colidx);                     /* mov bl,[ebx+0x8c484] */
+        {   uint8_t bl = g_proj_lut[colidx];                     /* mov bl,[ebx+0x8c484] */
             bx = (uint16_t)((colidx & 0xff00) | bl);               /* (bh=colidx>>8) */
             bx = (uint16_t)(bx - fC);                              /* sub bx,[ebp+0xc] */
             bx = (uint16_t)((bx & 0x00ff) | (((uint16_t)f12 & 0xff) << 8)); }  /* mov bh,[ebp+0x12] */
@@ -11978,9 +11984,10 @@ void interpolate_projection_gaps(uint8_t *esi, uint8_t *edi, uint16_t cx_count)
  * count. */
 void build_projection_table(uint16_t mode, uint32_t ebp, const uint8_t *esi)
 {
-    uint8_t *lut = (uint8_t *)(uintptr_t)(0x8c484u + OBJ_DELTA);
-    uint8_t *src = (uint8_t *)(uintptr_t)(0x8c204u + OBJ_DELTA);
+    uint8_t *lut = g_proj_lut;
+    uint8_t *src = g_proj_backup;
     uint32_t n   = (uint32_t)G32(VA_g_screen_pitch);
+    if (n > sizeof g_proj_lut) n = sizeof g_proj_lut;
 
     if (mode == 1) { memcpy(lut, src, (n >> 2) * 4); return; }           /* rep movsd (n/4 dwords) */
     if (mode == 2) {                                                     /* word -> byte downconvert */
