@@ -79,3 +79,13 @@ fired `on_frame_game` (since c48b0d5 only game-thread polls do): the overlays co
 `on_frame_game` is now driven from the top of the main game loop (`g_game_loop_hook` in `roth_main_sequence`, every mode), with
 the old mouse-poll path kept only as a fallback outside that loop (menus, cutscenes). The log prints
 `[plugins] on_frame_game is now driven from the game loop` once the loop runs.
+
+## New sound effects stop playing after a while (weapon shot, traps) — fixed 2026-11-23
+
+**Cause:** `start_sound_voice` locks the sample descriptor (`desc+8`); the engine unlocks it in the action-0 arm of the done
+callback `0x27501`. The host mixer (`audio_if_deliver_cbs`, platform/audio.c) delivered only action 2 ("free the record") for
+one-shot sounds, so every played one-shot leaked a lock. `evict_oldest_voice_descriptor` cannot recycle locked descriptors
+(`release_voice_descriptor` returns 2), so once all 32 descriptors carried a leaked lock `load_sound_sample` failed for any
+sample not already resident (log: `[sfx] dropped id=171 ...: sample not resolvable`, descriptors all with lock >= 1).
+Already-loaded sounds (doors) kept working.
+**Fix:** `sfx_unlock_descriptor_for_record()` performs the missing unlock right before the action-2 delivery.

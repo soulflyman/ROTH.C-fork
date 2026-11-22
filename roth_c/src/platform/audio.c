@@ -2722,6 +2722,23 @@ static unsigned long g_ifp_gdv_bytes;
  * guards, same action decision incl. the speech rem/eof/ended state machine, same post-cb resolve).
  * At most ONE delivery per tick (the trap path far-calls one cb and returns); dropped stale entries
  * are consumed in the same pass exactly like the trap loop's `continue`. */
+/* A one-shot SFX ends here with action 2 only (the record is freed), but the engine's own unlock of the
+ * sample descriptor (desc+8, taken in start_sound_voice) lives in the action-0 arm of 0x27501. Without
+ * it every played one-shot leaks a lock; locked descriptors can never be evicted, so after a while no
+ * new sample (e.g. the weapon shot) can be loaded. Mirror that unlock (never below zero). */
+static void sfx_unlock_descriptor_for_record(uint16_t tag)
+{
+    if (tag >= 16u) return;
+    uint32_t se = CANON(0x83ed4) + (uint32_t)tag * 0x9au;
+    if (*(uint32_t *)(uintptr_t)se == 0) return;
+    uint32_t slot = *(uint8_t *)(uintptr_t)(se + 5);
+    if (slot >= 0x20u) return;
+    uint32_t d = *(uint32_t *)(uintptr_t)(CANON(0x84874) + slot * 4);
+    if (d == 0) return;
+    uint8_t *lock = (uint8_t *)(uintptr_t)(d + 8);
+    if (*lock != 0) (*lock)--;
+}
+
 static void audio_if_deliver_cbs(void)
 {
     while (g_cbq_head != g_cbq_tail) {
@@ -2812,6 +2829,8 @@ static void audio_if_deliver_cbs(void)
         if (g_sfxtrace)
             sfx_ev(SFXE_CBDELIVER, (uint8_t)voice, (uint16_t)action, (uint32_t)g_sfx_dev,
                    qtag, cboff);
+        if (action == 2 && !qspeech)
+            sfx_unlock_descriptor_for_record((uint16_t)qtag);
         sos_user_callback_trampoline((uint32_t)g_sfx_dev, action, voice);
         /* resolve — verbatim from audio_trap's MAGIC_AFTER SFX arm */
         {
