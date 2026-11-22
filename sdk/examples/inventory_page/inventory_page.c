@@ -353,6 +353,8 @@ static int step_item(const list_t *l, int from, int dir)
 }
 
 /* on_scancode (TICK_ISR): flags only. */
+static volatile uint8_t g_swallowed[128];   /* makes we swallowed: their break is swallowed too, every other break passes */
+
 static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
 {
     uint8_t make = (uint8_t)(sc & 0x7f);
@@ -360,16 +362,25 @@ static uint8_t on_scancode(const struct roth_api_v1 *api, uint8_t sc)
     if (g_inspecting) {
         /* Esc ends the popup deterministically: arm the engine's own exit latch (checked every frame by the popup's
          * callback and by its modal loop) instead of relying on the key reaching the engine ring. */
-        if (!is_break && make == 0x01) api->game_ram->set_u32(VA_PANEL_OPEN + 8u, 1);
+        if (!is_break && make == 0x01) {   /* Esc only closes the popup: the engine must not also see it (it would open the game menu) */
+            api->game_ram->set_u32(VA_PANEL_OPEN + 8u, 1);
+            g_swallowed[0x01] = 1;
+            return 0;
+        }
+        if (is_break && g_swallowed[make]) { g_swallowed[make] = 0; return 0; }
+        return sc;
+    }
+    if (is_break) {   /* a break of a key the engine saw go down (e.g. Space = jump) MUST reach it, else it stays "held" */
+        if (g_swallowed[make]) { g_swallowed[make] = 0; return 0; }
         return sc;
     }
     if (g_state == ST_CLOSED) {
-        if (!is_break && make == (uint8_t)g_toggle_key && api->game_ram->u8(VA_PLAYER_MOVEMENT_ENABLED) == 1) {
-            g_state = ST_OPEN; return 0;
+        if (make == (uint8_t)g_toggle_key && api->game_ram->u8(VA_PLAYER_MOVEMENT_ENABLED) == 1) {
+            g_state = ST_OPEN; g_swallowed[make] = 1; return 0;
         }
         return sc;
     }
-    if (is_break) return 0;
+    g_swallowed[make] = 1;
     const list_t *l = &g_list[g_list_front];
     int cap = g_page_cap > 0 ? g_page_cap : 1, rows = g_rows_per_col > 0 ? g_rows_per_col : 1;
     if (make == (uint8_t)g_toggle_key || make == 0x01) { g_state = ST_CLOSED; return 0; }
