@@ -57,6 +57,11 @@ void call_orig_far(uint32_t va);
 extern uint32_t (*g_os_soft_int)(uint8_t vec, regs_t *io);
 /* Host seam: called once per iteration at the top of the main game loop (roth_main_sequence), in every mode, on the game thread. */
 extern void (*g_game_loop_hook)(void);
+/* Host options (platform/main.c: --head-bob / --pause-on-focus-loss, SDK set_gameplay_option). g_opt_headbob_pct scales the walk
+ * view-bob (100 = original, 0 = off); g_opt_pause_on_focus_loss parks gameplay in movement mode 2 while *g_focus_lost_flag is set. */
+extern volatile int32_t g_opt_headbob_pct;
+extern volatile int32_t g_opt_pause_on_focus_loss;
+extern volatile uint32_t *g_focus_lost_flag;
 
 /* Host hook: drive an `out dx,al` byte port write from a lift, against the host's port emulation (the
  * same path the trap dispatch runs for the original's `out` instruction). Used by the GDV codec's

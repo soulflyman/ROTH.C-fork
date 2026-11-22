@@ -371,6 +371,7 @@ void update_player_view_bob(uint32_t ebp)
         int16_t cx = (int16_t)G16(VA_g_player_walk_bob_table + idx);             /* bob sine table */
         cx = (int16_t)(cx * (int16_t)G16(VA_g_move_speed_accum));           /* imul cx, g_move_speed_accum (16-bit) */
         cx = (int16_t)(cx >> 4);                              /* sar cx, 4 (signed) */
+        if (g_opt_headbob_pct != 100) cx = (int16_t)((int32_t)cx * g_opt_headbob_pct / 100);   /* host option: reduce / remove the bob */
         G16(VA_g_collision_sector_stack + 0x40) = (uint16_t)cx;
         si = (int16_t)(si + cx);                              /* add si, cx (16-bit) */
         si = (int16_t)(si + (int16_t)ebx);                    /* add si, bx */

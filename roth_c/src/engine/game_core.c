@@ -24,6 +24,7 @@
  */
 #include "common.h"
 #include "engine.h"
+static void focus_pause_poll(void);
 #include <string.h>
 #ifdef ROTH_STANDALONE
 #include "os_api.h"   /* os_dos_print_string — the imgfree dispatch for the two AH=9 print thunks */
@@ -844,6 +845,7 @@ L17be6:
     G8(VA_g_player_movement_enabled) = 1;                               /* g_player_movement_enabled = 1 (gameplay) */
 
 L17c16:                                            /* --- INNER (per-frame) LOOP TOP --- */
+    focus_pause_poll();
     if (g_game_loop_hook) g_game_loop_hook();      /* host seam (plugins' on_frame_game): every mode, game thread, between frames */
     gc_call(&r, 0x156bd);                          /* service_audio_sequence */
     gc_call(&r, 0x1e9b5);                          /* voice_stream_pump */
@@ -1182,6 +1184,23 @@ report:
 }
 
 void (*g_game_loop_hook)(void);
+volatile int32_t g_opt_headbob_pct = 100;
+volatile int32_t g_opt_pause_on_focus_loss;
+volatile uint32_t *g_focus_lost_flag;
+
+/* pause-on-focus-loss: gameplay (movement mode 1) is parked in the inert mode 2 while the window is unfocused, and restored
+ * only if WE parked it and nothing else (an overlay, a cutscene) changed the mode meanwhile. */
+static void focus_pause_poll(void)
+{
+    static int parked;
+    uint8_t mv = G8(VA_g_player_movement_enabled);
+    if (g_opt_pause_on_focus_loss && g_focus_lost_flag && *g_focus_lost_flag) {
+        if (!parked && mv == 1) { G8(VA_g_player_movement_enabled) = 2; parked = 1; }
+    } else if (parked) {
+        if (mv == 2) G8(VA_g_player_movement_enabled) = 1;
+        parked = 0;
+    }
+}
 
 /* ============================================================ Layer 6 — program entry */
 

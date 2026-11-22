@@ -85,6 +85,12 @@ void roth_sdk_set_display_preview(uint32_t x, uint32_t y, uint32_t w, uint32_t h
     g_shm->pre_x = x; g_shm->pre_y = y; g_shm->pre_h = h; g_shm->pre_w = w;
 }
 
+/* roth_api_v1->set_gameplay_option (SDK 0.13): host-side gameplay options read by the engine (game_core.c / player.c). */
+void roth_sdk_set_gameplay_option(uint32_t id, int32_t value)
+{
+    if (id == 1) g_opt_headbob_pct = value < 0 ? 0 : value > 100 ? 100 : value;
+    else if (id == 2) g_opt_pause_on_focus_loss = value != 0;
+}
 
 /* ===================== settings registry (SDK 0.8) =====================
  * Plugins register typed settings from on_load (MAIN only); an overlay plugin enumerates them and edits

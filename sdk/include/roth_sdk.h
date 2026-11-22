@@ -23,7 +23,7 @@ extern "C" {
 #define ROTH_SDK_MAJOR 0
 #define ROTH_SDK_MINOR 11
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 12
+#define ROTH_ABI_MINOR 13
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
@@ -1293,6 +1293,7 @@ struct roth_api_v1 {
     const struct roth_setting_v1 *(ROTH_CDECL *setting_at)(uint32_t);  /* registry entry i (NULL if out of range); the pointer stays valid for the process lifetime */
     void (ROTH_CDECL *setting_commit)(uint32_t);  /* call after changing *value of entry i: runs its on_change (GAME context) and persists the value */
     void (ROTH_CDECL *set_display_preview)(uint32_t, uint32_t, uint32_t, uint32_t);  /* ask the SDL presenter to draw a built-in test scene into the published-frame rectangle (x, y, w, h), rendered with the CURRENT display options (edge AA incl. threshold, upscaler, scanlines, CRT look) — the 3D view is frozen while a menu is open, so this is how a menu shows what a display option does. w == 0 (or an out-of-frame rectangle) switches the preview off. Safe from any context; no-op without an SDL presenter. */
+    void (ROTH_CDECL *set_gameplay_option)(uint32_t, int32_t);  /* set a host-side gameplay option: id 1 = walk head-bob in percent of the original (0 = off, 100 = original, clamped 0-100); id 2 = pause gameplay while the window has no input focus (0 / 1). Unknown ids are ignored. Safe from any context. */
 };
 
 /* ---- context-tagged lifecycle callbacks ---------------------------------- */

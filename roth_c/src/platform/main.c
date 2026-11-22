@@ -178,6 +178,7 @@ static void mem_setup(void)
     g_shm->width = ROTH_FB_W;
     g_shm->height = ROTH_FB_H;
     g_shm->host_alive = 1;
+    g_focus_lost_flag = &g_shm->focus_lost;
 }
 
 /* Case-insensitive test for CONFIG.INI (the game's config file, the game-dir sentinel) under `dir`. */
@@ -516,6 +517,10 @@ int main(int argc, char **argv)
             set_window_mode("borderless");
         } else if (!strcmp(argv[i], "--crt") && i + 1 < argc) {
             set_crt(atoi(argv[++i]));
+        } else if (!strcmp(argv[i], "--head-bob") && i + 1 < argc) {
+            g_opt_headbob_pct = atoi(argv[++i]);        /* walk view-bob, percent of the original (0 = off) */
+        } else if (!strcmp(argv[i], "--pause-on-focus-loss")) {
+            g_opt_pause_on_focus_loss = 1;
         } else if (!strcmp(argv[i], "--integer-scale")) {
             g_sdl_filter |= 1 << 20;
         } else if (!strcmp(argv[i], "--scanlines") && i + 1 < argc) {
@@ -562,6 +567,8 @@ int main(int argc, char **argv)
     if (getenv("ROTH_CRT")) set_crt(atoi(getenv("ROTH_CRT")));
     if (getenv("ROTH_WINDOW_MODE")) set_window_mode(getenv("ROTH_WINDOW_MODE"));
     if (getenv("ROTH_AA")) g_sdl_filter |= 2;
+    if (getenv("ROTH_HEADBOB")) g_opt_headbob_pct = atoi(getenv("ROTH_HEADBOB"));
+    if (getenv("ROTH_PAUSE_ON_FOCUS_LOSS")) g_opt_pause_on_focus_loss = atoi(getenv("ROTH_PAUSE_ON_FOCUS_LOSS")) != 0;
 #endif
 
     __asm__ volatile("mov %%es, %0" : "=r"(g_host_es));

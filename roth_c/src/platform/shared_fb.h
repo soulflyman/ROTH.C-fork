@@ -80,6 +80,9 @@ struct roth_shm {
     /* Live display-options preview (roth_api_v1->set_display_preview): the presenter draws a built-in test scene into this
      * rectangle of the published frame, rendered with the current display options. pre_w == 0 = off. */
     volatile uint32_t pre_x, pre_y, pre_w, pre_h;
+
+    /* 1 while the SDL window has lost input focus (set by sdl_host.c); the game thread parks gameplay on it when pause-on-focus-loss is on. */
+    volatile uint32_t focus_lost;
 };
 
 #endif

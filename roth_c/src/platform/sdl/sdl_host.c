@@ -409,7 +409,9 @@ int sdl_present_run(int scale, int filter)
     double sens = se ? atof(se) : 2.0;
     if (sens <= 0) sens = 2.0;
     SDL_SetWindowRelativeMouseMode(win, true);
-    int grabbed = 1;
+    int grabbed = 1, focused = 1;
+    uint32_t swallow_btn = 0;                 /* buttons of the click that re-grabbed the window: ignored until released */
+    static uint8_t held_keys[SDL_SCANCODE_COUNT];
     double ax = 0, ay = 0; /* fractional delta accumulators */
 
     /* dev/verification hook (env-gated, one-shot): ROTH_SDL_SHOT=<path.bmp> reads back the rendered
@@ -440,14 +442,20 @@ int sdl_present_run(int scale, int filter)
                 running = 0;
                 break;
             case SDL_EVENT_KEY_DOWN:
-                if (!e.key.repeat)
+                if (!e.key.repeat && focused) {
+                    if (e.key.scancode < SDL_SCANCODE_COUNT) held_keys[e.key.scancode] = 1;
                     send_key(e.key.scancode, 1);
+                }
                 break;
             case SDL_EVENT_KEY_UP:
+                if (e.key.scancode < SDL_SCANCODE_COUNT) {
+                    if (!held_keys[e.key.scancode]) break;   /* released key we already cancelled on focus loss */
+                    held_keys[e.key.scancode] = 0;
+                }
                 send_key(e.key.scancode, 0);
                 break;
             case SDL_EVENT_MOUSE_MOTION:
-                if (grabbed) {
+                if (grabbed && focused) {
                     /* scaled relative deltas drive the in-game cursor (AX=000B). xrel/yrel are
                      * float in SDL3; accumulate the fraction so slow motion still registers. */
                     ax += (double)e.motion.xrel * sens;
@@ -463,9 +471,11 @@ int sdl_present_run(int scale, int filter)
                 if (!grabbed && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
                     SDL_SetWindowRelativeMouseMode(win, true); /* click to re-grab */
                     grabbed = 1;
+                    swallow_btn |= SDL_BUTTON_MASK(e.button.button);   /* the refocus click must not fire in-game */
                 }
+                if (e.type == SDL_EVENT_MOUSE_BUTTON_UP) swallow_btn &= ~SDL_BUTTON_MASK(e.button.button);
                 float fx, fy;
-                SDL_MouseButtonFlags st = SDL_GetMouseState(&fx, &fy);
+                SDL_MouseButtonFlags st = SDL_GetMouseState(&fx, &fy) & ~swallow_btn;
                 uint32_t b = 0;
                 if (st & SDL_BUTTON_MASK(SDL_BUTTON_LEFT)) b |= 1;
                 if (st & SDL_BUTTON_MASK(SDL_BUTTON_RIGHT)) b |= 2;
@@ -476,6 +486,18 @@ int sdl_present_run(int scale, int filter)
             case SDL_EVENT_WINDOW_FOCUS_LOST:
                 SDL_SetWindowRelativeMouseMode(win, false); /* free cursor on alt-tab */
                 grabbed = 0;
+                focused = 0;
+                g_shm->focus_lost = 1;
+                /* cancel everything held so nothing sticks (or fires) across the focus change */
+                for (int sc = 0; sc < SDL_SCANCODE_COUNT; sc++)
+                    if (held_keys[sc]) { held_keys[sc] = 0; send_key((SDL_Scancode)sc, 0); }
+                g_shm->mouse_buttons = 0;
+                swallow_btn = 0;
+                ax = ay = 0;
+                break;
+            case SDL_EVENT_WINDOW_FOCUS_GAINED:
+                focused = 1;
+                g_shm->focus_lost = 0;
                 break;
             default:
                 break;

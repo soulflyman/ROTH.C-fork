@@ -489,6 +489,19 @@ static void preview_set(const struct roth_api_v1 *api, uint32_t x, uint32_t y, u
         api->set_display_preview(x, y, w, h);
 }
 
+/* set_gameplay_option arrived with SDK 0.13: on an older host the options simply do nothing. */
+static int32_t g_set_bob = 100, g_set_pause_focus = 0;
+static const struct roth_api_v1 *g_gp_api;
+static void apply_gameplay_opts(void)
+{
+    const struct roth_api_v1 *api = g_gp_api;
+    if (api && api->struct_size >= offsetof(struct roth_api_v1, set_gameplay_option) + sizeof api->set_gameplay_option &&
+        api->set_gameplay_option) {
+        api->set_gameplay_option(1, g_set_bob);
+        api->set_gameplay_option(2, g_set_pause_focus);
+    }
+}
+
 static uint8_t g_action_sc[64]; /* current scancode per action, refreshed from game_ram on open */
 
 static volatile int g_pending_rebind = 0;
@@ -597,6 +610,21 @@ static void on_load(const struct roth_api_v1 *api)
         d.imin = 4; d.imax = 128; d.istep = 4; d.on_change = apply_display_flags;
         api->register_setting(&d);
         apply_display_flags();                         /* push the (possibly persisted) values to the presenter now */
+    }
+    {   /* gameplay options (host-side, SDK 0.13) */
+        struct roth_setting_v1 d;
+        g_gp_api = api;
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d; d.group = "GAMEPLAY";
+        d.key = "head_bob"; d.label = "HEAD BOB %"; d.type = ROTH_SETTING_INT; d.value = &g_set_bob;
+        d.imin = 0; d.imax = 100; d.istep = 25; d.on_change = apply_gameplay_opts;
+        api->register_setting(&d);
+        memset(&d, 0, sizeof d);
+        d.struct_size = (uint32_t)sizeof d; d.group = "GAMEPLAY";
+        d.key = "pause_on_focus_loss"; d.label = "PAUSE ON FOCUS LOSS"; d.type = ROTH_SETTING_BOOL; d.value = &g_set_pause_focus;
+        d.on_change = apply_gameplay_opts;
+        api->register_setting(&d);
+        apply_gameplay_opts();                         /* the menu's (persisted) values win over --head-bob / ROTH_HEADBOB */
     }
     {   /* this overlay's own options, through the same registry any other mod uses */
         struct roth_setting_v1 d;
@@ -1268,7 +1296,7 @@ static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *pixels,
 
 static const struct roth_plugin_info_v1 SETTINGS = {
     .abi_major     = ROTH_ABI_MAJOR,
-    .abi_minor     = 11,   /* lowest host this menu runs on; set_display_preview (0.12) is optional, see preview_set */
+    .abi_minor     = 11,   /* lowest host this menu runs on; set_display_preview (0.12) and set_gameplay_option (0.13) are optional, see preview_set / apply_gameplay_opts */
     .struct_size   = sizeof(struct roth_plugin_info_v1),
     .id            = "ire.roth.settings",
     .name          = "Menu (settings overlay: live mouselook, keybinds, display)",

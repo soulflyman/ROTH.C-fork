@@ -4,12 +4,12 @@
  "sdk_major": 0,
  "sdk_minor": 11,
  "abi_major": 0,
- "abi_minor": 12,
+ "abi_minor": 13,
  "arch": "i386",
  "ptr_size": 4,
  "structs": {
   "roth_api_v1": {
-   "size": 48,
+   "size": 52,
    "fields": [
     {
      "name": "abi_major",
@@ -88,6 +88,12 @@
     {
      "name": "set_display_preview",
      "offset": 44,
+     "size": 4,
+     "kind": "fnptr"
+    },
+    {
+     "name": "set_gameplay_option",
+     "offset": 48,
      "size": 4,
      "kind": "fnptr"
     }

@@ -118,6 +118,7 @@ extern uint32_t roth_sdk_setting_count(void);
 extern const struct roth_setting_v1 *roth_sdk_setting_at(uint32_t);
 extern void roth_sdk_setting_commit(uint32_t);
 extern void roth_sdk_set_display_preview(uint32_t, uint32_t, uint32_t, uint32_t);
+extern void roth_sdk_set_gameplay_option(uint32_t, int32_t);
 
 ROTH_SDK_EXPORT const struct roth_api_v1 roth_host_api_v1 = {
     .abi_major = ROTH_ABI_MAJOR,
@@ -133,4 +134,5 @@ ROTH_SDK_EXPORT const struct roth_api_v1 roth_host_api_v1 = {
     .setting_at = roth_sdk_setting_at,
     .setting_commit = roth_sdk_setting_commit,
     .set_display_preview = roth_sdk_set_display_preview,
+    .set_gameplay_option = roth_sdk_set_gameplay_option,
 };

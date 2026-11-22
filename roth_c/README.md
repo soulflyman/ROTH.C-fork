@@ -98,6 +98,8 @@ Common switches:
 | `--integer-scale`   | scale only by whole multiples, letterboxed (`ROTH_INTEGER_SCALE=1`)                                    |
 | `--scanlines N`     | darken every second output line, strength 0-8, needs >= 2x scale (`ROTH_SCANLINES=N`)                  |
 | `--crt N`           | CRT look 0-2: vignette (level 2 adds a fine RGB mask at >= 4x scale); the horizontal lines come from `--scanlines` (`ROTH_CRT=N`)   |
+| `--head-bob N`      | walk head-bob in percent of the original, 0 = off (`ROTH_HEADBOB=N`; the F11 menu's HEAD BOB % row, when that mod is loaded, overrides it)   |
+| `--pause-on-focus-loss` | park gameplay while the window has no input focus (`ROTH_PAUSE_ON_FOCUS_LOSS=1`; also a row in the F11 menu) |
 | `--window-mode M`    | `windowed` (default), `borderless` (fullscreen window at desktop resolution) or `fullscreen` (`ROTH_WINDOW_MODE=M`; `--fullscreen` = borderless; also a WINDOW MODE row in the F11 menu) |
 | `--aa`              | edge anti-aliasing of the 3D view (`ROTH_AA=1`; also a row in the F11 settings menu) - see the note below |
 | `--devmode`         | enable the original's developer keys (e.g. wireframe map, open door); the DEBUG key bindings in the F11 menu need it |
