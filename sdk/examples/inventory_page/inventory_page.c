@@ -247,8 +247,10 @@ static int32_t g_gray_bg = 1;                                /* registered BOOL 
 #define VA_VIEW_X 0x85ce0u
 #define VA_VIEW_Y 0x85ce4u
 #define VA_HIRES_DOUBLE 0x90cbdu
+#define VA_POPUP_STATE  0x810c0u
+static volatile int g_inspecting;           /* engine detail popup running: overlay hidden, input passes through */
 
-static void gray_view_pitch(const struct roth_api_v1 *api, uint8_t *px, uint32_t w, uint32_t h, uint32_t pitch)
+static void gray_view(const struct roth_api_v1 *api, uint8_t *px, uint32_t w, uint32_t h)
 {
     const struct roth_game_ram_api_v1 *gr = api->game_ram;
     const uint8_t *lut = (const uint8_t *)gr->to_ptr(VA_GRAY_LUT);
@@ -256,15 +258,23 @@ static void gray_view_pitch(const struct roth_api_v1 *api, uint8_t *px, uint32_t
     uint32_t vx = gr->u32(VA_VIEW_X), vy = gr->u32(VA_VIEW_Y), vw = gr->u32(VA_VIEW_W), vh = gr->u32(VA_VIEW_H);
     if (gr->u8(VA_HIRES_DOUBLE)) { vy *= 2; vh *= 2; }
     if (vx > w || vy > h || vw > w - vx || vh > h - vy) return;
-    for (uint32_t y = vy; y < vy + vh; y++) {
-        uint8_t *row = px + (size_t)y * pitch + vx;
-        for (uint32_t x = 0; x < vw; x++) row[x] = lut[row[x]];
+    /* while the examine popup runs, leave its window (and shadow border) in colour */
+    int32_t ex0 = 0, ey0 = 0, ex1 = 0, ey1 = 0;
+    if (g_inspecting && gr->u16(VA_POPUP_STATE + 0x28)) {
+        int32_t dbl = gr->u8(VA_HIRES_DOUBLE) ? 2 : 1;
+        ex0 = (int16_t)gr->u16(VA_POPUP_STATE + 0x24) - 4;
+        ey0 = ((int16_t)gr->u16(VA_POPUP_STATE + 0x26) - 4) * dbl;
+        ex1 = ex0 + (int16_t)gr->u16(VA_POPUP_STATE + 0x28) + 9;
+        ey1 = ey0 + ((int16_t)gr->u16(VA_POPUP_STATE + 0x2a) + 8) * dbl;
     }
-}
-
-static void gray_view(const struct roth_api_v1 *api, uint8_t *px, uint32_t w, uint32_t h)
-{
-    gray_view_pitch(api, px, w, h, w);
+    for (uint32_t y = vy; y < vy + vh; y++) {
+        uint8_t *row = px + (size_t)y * w + vx;
+        int inside_y = (int32_t)y >= ey0 && (int32_t)y < ey1;
+        for (uint32_t x = 0; x < vw; x++) {
+            if (inside_y && (int32_t)(vx + x) >= ex0 && (int32_t)(vx + x) < ex1) continue;
+            row[x] = lut[row[x]];
+        }
+    }
 }
 
 /* ---- list model (built in on_frame_game, drawn in on_compose_tick; double-buffered) ---- */
@@ -280,7 +290,6 @@ static volatile int g_sel;                  /* index into the front list (always
 static volatile int g_page;
 static volatile int g_equip_request;        /* slot index + 1, 0 = none */
 static volatile int g_inspect_request;      /* slot index + 1, 0 = none */
-static volatile int g_inspecting;           /* engine detail popup running: overlay hidden, input passes through */
 static int32_t g_inspect_key = 0x39;        /* Space, like the native inventory — a registered KEY setting */
 static volatile int g_rows_per_col = 20, g_cols = 1, g_page_cap = 20;   /* published by compose */
 static volatile int g_nav;                  /* pending navigation from the ISR: set, consumed in frame */
@@ -570,11 +579,7 @@ static void examine(const struct roth_api_v1 *api, int id, uint32_t slotptr)
     if (save_busy) gr->set_u32(VA_SCREEN_BUSY, 0);
     gr->set_u32(VA_PANEL_OPEN + 8u, 0);
     fprintf(stderr, "[mods:_inventory] examine: calling the popup\n");
-    /* compose skips its own graying while the popup owns the screen, so desaturate the engine's frame itself first */
-    if (g_gray_bg) {
-        uint8_t *fb = api->engine->screen_xy_to_framebuffer_ptr(0, 0);
-        if (fb) gray_view_pitch(api, fb, gr->u32(VA_SCREEN_PITCH), gr->u32(VA_SCREEN_HEIGHT), gr->u32(VA_SCREEN_PITCH));
-    }
+    gr->set_u16(VA_POPUP_STATE + 0x28, 0);   /* no stale window rect from an earlier popup */
     g_inspecting = 1;
     uint32_t r = api->engine->load_dbase300_resource_at_offset((it->doc << 3) + 4u, it->loop, dbase + it->recoff, (uint32_t)(uintptr_t)hov);
     g_inspecting = 0;
@@ -748,8 +753,9 @@ static void draw_tiles(uint8_t *px, uint32_t w, uint32_t h, const list_t *l, int
 static void on_compose_tick(const struct roth_api_v1 *api, uint8_t *px, uint32_t w, uint32_t h)
 {
     (void)api;
-    if (g_state == ST_CLOSED || !px || g_inspecting) return;
+    if (g_state == ST_CLOSED || !px) return;
     if (g_gray_bg) gray_view(api, px, w, h);
+    if (g_inspecting) return;
     const list_t *l = &g_list[g_list_front];
     int s = g_scale, adv = (GLYPH_W + 1) * s, rowh = (GLYPH_H + 4) * s;
 
