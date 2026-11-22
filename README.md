@@ -63,6 +63,11 @@ install yourself.
    `--window-mode`, `--aa`, `--head-bob`, `--pause-on-focus-loss`, ...). The full table is in
    [`roth_c/README.md`](roth_c/README.md#running). Values saved by the F11 menu win over the command line.
 
+**macOS:** there is no native macOS build. The engine is a 32-bit x86 program that needs real memory at fixed low
+addresses, and macOS has neither a 32-bit runtime nor a host layer for it here. What you can try, **untested**, is the
+Windows bundle under Wine with WoW64 support (e.g. CrossOver; on Apple Silicon this runs through Rosetta 2). CI starts
+`rothc.exe` under Wine on Linux, but nobody has run it on a Mac yet; reports are welcome.
+
 Everything that differs from upstream is listed in [`docs/FORK_SUMMARY.md`](docs/FORK_SUMMARY.md).
 
 ## ![System banner](images/ROTH.C_system_banner.png)
