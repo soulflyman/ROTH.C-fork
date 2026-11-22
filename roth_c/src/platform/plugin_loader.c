@@ -69,12 +69,21 @@ const char *roth_sdk_current_plugin_dir(void) { return g_cur_dispatch_dir ? g_cu
  * re-reads filter_mode every frame, so this is just a plain word write — no lock needed, same
  * convention as the existing cross-thread aspect_w/h and mouse_dx/dy fields. NULL g_shm (pure
  * --headless, no presenter attached) makes this a no-op. */
-void roth_sdk_set_display_filter(uint32_t flags) { if (g_shm) g_shm->filter_mode = flags & 0x3fffff03u; }   /* bit0 linear, bit1 edge-AA, bits 8-15 AA threshold (0 = default), 16-19 scaler, 20 integer scale, 24-27 scanlines, 28-29 CRT look */
+void roth_sdk_set_display_filter(uint32_t flags) { if (g_shm) g_shm->filter_mode = flags & 0xffffff03u; }   /* bit0 linear, bit1 edge-AA, bits 8-15 AA threshold (0 = default), 16-19 scaler, 20 integer scale, 24-27 scanlines, 28-29 CRT look, 30-31 window mode */
 
 /* roth_api_v1->get_display_filter (SDK 0.6): read back the live value, so a plugin can reflect
  * the TRUE current state (e.g. seeded from --filter/ROTH_FILTER at boot) on first open instead
  * of assuming nearest. */
 uint32_t roth_sdk_get_display_filter(void) { return g_shm ? g_shm->filter_mode : 0u; }
+
+/* roth_api_v1->set_display_preview (SDK 0.12): where the presenter draws its built-in display-options test scene (w == 0 = off).
+ * Clamped to the published frame; a plain word write, the presenter re-reads it every frame. */
+void roth_sdk_set_display_preview(uint32_t x, uint32_t y, uint32_t w, uint32_t h)
+{
+    if (!g_shm) return;
+    if (w == 0 || h == 0 || x >= g_shm->cur_w || y >= g_shm->cur_h || w > g_shm->cur_w - x || h > g_shm->cur_h - y) w = h = 0;
+    g_shm->pre_x = x; g_shm->pre_y = y; g_shm->pre_h = h; g_shm->pre_w = w;
+}
 
 
 /* ===================== settings registry (SDK 0.8) =====================

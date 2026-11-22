@@ -23,7 +23,7 @@ extern "C" {
 #define ROTH_SDK_MAJOR 0
 #define ROTH_SDK_MINOR 11
 #define ROTH_ABI_MAJOR 0
-#define ROTH_ABI_MINOR 11
+#define ROTH_ABI_MINOR 12
 /* Load rule: plugin loads iff abi_major == host AND abi_minor <= host. */
 
 /* ---- calling convention / visibility ------------------------------------- */
@@ -1286,12 +1286,13 @@ struct roth_api_v1 {
     const struct roth_engine_api_v1  *engine;
     const struct roth_game_ram_api_v1 *game_ram;
     const char *(ROTH_CDECL *plugin_dir)(void);  /* directory of the currently-dispatching plugin (valid during MAIN lifecycle callbacks; "" otherwise) */
-    void (ROTH_CDECL *set_display_filter)(uint32_t);  /* set the in-process SDL presenter's display-filter FLAGS: bit 0 = linear upscale filter (0 = nearest, crisp, default), bit 1 = edge anti-aliasing of the 3D view (FXAA-style post-process; gameplay only, plugin overlays stay crisp). Bits 8-15 = the AA edge-contrast threshold (0 = engine default; higher = fewer pixels smoothed, sharper textures). Bits 16-19 = upscaler id (0 nearest, 1 linear, 2 sharp-bilinear, 3 scale2x; 0 with bit 0 set still means linear), bit 20 = integer scaling, bits 24-27 = scanline strength 0-8, bits 28-29 = CRT look (0 off, 1 light, 2 strong: column mask + vignette). Other bits are ignored. Safe from GAME context; takes effect on the next presented frame. No-op if no SDL presenter is attached (e.g. a pure --headless run). */
+    void (ROTH_CDECL *set_display_filter)(uint32_t);  /* set the in-process SDL presenter's display-filter FLAGS: bit 0 = linear upscale filter (0 = nearest, crisp, default), bit 1 = edge anti-aliasing of the 3D view (FXAA-style post-process; gameplay only, plugin overlays stay crisp). Bits 8-15 = the AA edge-contrast threshold (0 = engine default; higher = fewer pixels smoothed, sharper textures). Bits 16-19 = upscaler id (0 nearest, 1 linear, 2 sharp-bilinear, 3 scale2x; 0 with bit 0 set still means linear), bit 20 = integer scaling, bits 24-27 = scanline strength 0-8, bits 28-29 = CRT look (0 off, 1 light, 2 strong: column mask + vignette), bits 30-31 = window mode (0 windowed, 1 fullscreen window / borderless, 2 fullscreen). Other bits are ignored. Safe from GAME context; takes effect on the next presented frame. No-op if no SDL presenter is attached (e.g. a pure --headless run). */
     uint32_t (ROTH_CDECL *get_display_filter)(void);  /* read back the current display-filter flags (bit 0 = linear, bit 1 = edge anti-aliasing, bits 8-15 = AA threshold or 0) — lets a plugin reflect the true live state (e.g. seeded from --filter/--aa/ROTH_FILTER/ROTH_AA at boot) instead of assuming a default. Returns 0 if no SDL presenter is attached. */
     int32_t (ROTH_CDECL *register_setting)(const struct roth_setting_v1 *);  /* register one setting (MAIN context only, i.e. from on_load); returns its registry index, or -1 outside MAIN / on a bad descriptor. The host stamps owner_id/owner_name and applies any persisted value into *s->value. */
     uint32_t (ROTH_CDECL *setting_count)(void);  /* number of registered settings (stable once every on_load has run) */
     const struct roth_setting_v1 *(ROTH_CDECL *setting_at)(uint32_t);  /* registry entry i (NULL if out of range); the pointer stays valid for the process lifetime */
     void (ROTH_CDECL *setting_commit)(uint32_t);  /* call after changing *value of entry i: runs its on_change (GAME context) and persists the value */
+    void (ROTH_CDECL *set_display_preview)(uint32_t, uint32_t, uint32_t, uint32_t);  /* ask the SDL presenter to draw a built-in test scene into the published-frame rectangle (x, y, w, h), rendered with the CURRENT display options (edge AA incl. threshold, upscaler, scanlines, CRT look) — the 3D view is frozen while a menu is open, so this is how a menu shows what a display option does. w == 0 (or an out-of-frame rectangle) switches the preview off. Safe from any context; no-op without an SDL presenter. */
 };
 
 /* ---- context-tagged lifecycle callbacks ---------------------------------- */

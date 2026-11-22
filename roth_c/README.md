@@ -98,6 +98,7 @@ Common switches:
 | `--integer-scale`   | scale only by whole multiples, letterboxed (`ROTH_INTEGER_SCALE=1`)                                    |
 | `--scanlines N`     | darken every second output line, strength 0-8, needs >= 2x scale (`ROTH_SCANLINES=N`)                  |
 | `--crt N`           | CRT look 0-2: aperture-grille column mask + vignette (needs >= 2x scale for the mask) (`ROTH_CRT=N`)   |
+| `--window-mode M`    | `windowed` (default), `borderless` (fullscreen window at desktop resolution) or `fullscreen` (`ROTH_WINDOW_MODE=M`; `--fullscreen` = borderless; also a WINDOW MODE row in the F11 menu) |
 | `--aa`              | edge anti-aliasing of the 3D view (`ROTH_AA=1`; also a row in the F11 settings menu) - see the note below |
 | `--devmode`         | enable the original's developer keys (e.g. wireframe map, open door); the DEBUG key bindings in the F11 menu need it |
 | `--no-mods`         | start with the mod platform inert (`ROTH_MODS=0` does the same)                                         |
@@ -112,8 +113,8 @@ The renderer is an 8-bit palette rasterizer, so true MSAA/SSAA is not possible. 
 post-process on the presented image, limited to the 3D view during gameplay (HUD, menus, cutscenes and mod
 overlays stay untouched). **Known issue: it also softens textures** - any high-contrast texel pattern looks
 like an edge to a luma-based filter, so walls and objects look blurrier than without it. It is off by default and
-deliberately kept in for people who prefer smooth edges over sharp textures. The bottom tenth of the view is left unsmoothed (no AA, and drawn with nearest-neighbour scaling even when a smoothing UPSCALER / `--filter linear` is on) so subtitles and inspect text stay crisp and readable. The F11 settings menu has ANTI-ALIASING and an **AA THRESHOLD** row (4-128, default 24; higher = fewer pixels
-touched = less texture softening, but also less edge smoothing); these and UPSCALER / INTEGER SCALING / SCANLINES / CRT LOOK are saved in
+deliberately kept in for people who prefer smooth edges over sharp textures. The bottom tenth of the view is left unsmoothed (no AA, and drawn with nearest-neighbour scaling even when a smoothing UPSCALER / `--filter linear` is on) so subtitles and inspect text stay crisp and readable. In wide video modes the F11 menu shows a PREVIEW picture (a built-in test scene, drawn with the current anti-aliasing, upscaler, scanline and CRT settings) because the game view behind the menu is frozen. The F11 settings menu has ANTI-ALIASING and an **AA THRESHOLD** row (4-128, default 24; higher = fewer pixels
+touched = less texture softening, but also less edge smoothing); these and UPSCALER / INTEGER SCALING / SCANLINES / CRT LOOK / WINDOW MODE are saved in
 `mods/_settings.cfg` and win over the command line. `ROTH_AA_EDGE=N` sets the starting threshold. A smarter variant (e.g. only smoothing silhouette edges, not texture detail) is a
 possible future improvement.
 

@@ -28,6 +28,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 
 /* the published framebuffer + input rings (defined in main.c, created by shm_setup()). The game
  * thread's shm_tick is the sole writer of pixels/palette/frame; we are the sole reader. We are the
@@ -229,6 +230,91 @@ static void scale2x_pass(uint32_t *dst, const uint32_t *src, int w, int h)
     }
 }
 
+/* ---- window mode (filter_mode bits 30-31): 0 windowed, 1 fullscreen window (borderless desktop), 2 fullscreen ---- */
+static void apply_window_mode_impl(SDL_Window *win, int mode);
+static void apply_window_mode(SDL_Window *win, int mode)
+{
+    apply_window_mode_impl(win, mode);
+    SDL_SyncWindow(win);
+    fprintf(stderr, "[sdl] window mode %d: fullscreen=%d\n", mode, (SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN) ? 1 : 0);
+}
+static void apply_window_mode_impl(SDL_Window *win, int mode)
+{
+    if (mode == 0) { SDL_SetWindowFullscreen(win, false); return; }
+    if (mode == 2) {   /* exclusive: the desktop's own mode, set explicitly (compositors may still treat it as borderless) */
+        SDL_DisplayID d = SDL_GetDisplayForWindow(win);
+        const SDL_DisplayMode *dm = d ? SDL_GetDesktopDisplayMode(d) : NULL;
+        SDL_DisplayMode best;
+        if (dm && SDL_GetClosestFullscreenDisplayMode(d, dm->w, dm->h, dm->refresh_rate, false, &best) &&
+            SDL_SetWindowFullscreenMode(win, &best)) {
+            SDL_SetWindowFullscreen(win, true);
+            return;
+        }
+    }
+    SDL_SetWindowFullscreenMode(win, NULL);   /* NULL mode = borderless fullscreen window at desktop resolution */
+    SDL_SetWindowFullscreen(win, true);
+}
+
+/* ---- live preview scene (roth_api_v1->set_display_preview): a procedural stone corridor drawn with a private palette, so the
+ * display options can be judged while the real 3D view is frozen behind a menu. Hard texel edges, diagonals and thin lines
+ * give edge AA, the scalers, scanlines and the CRT look something to act on. Palette index = hue * 16 + shade. ---- */
+static uint8_t *g_pv_idx;
+static uint32_t g_pv_pal[256];
+static int g_pv_w, g_pv_h;
+
+static uint32_t pv_hash(int x, int y) { uint32_t h = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u; h = (h ^ (h >> 13)) * 1274126177u; return h ^ (h >> 16); }
+
+static void pv_build(int w, int h)
+{
+    static const uint8_t hue_rgb[8][3] = { { 150, 150, 160 }, { 170, 105, 70 }, { 120, 100, 80 }, { 230, 190, 80 },
+                                           { 200, 50, 40 }, { 70, 110, 200 }, { 60, 160, 80 }, { 230, 230, 230 } };
+    for (int hu = 0; hu < 8; hu++)
+        for (int sh = 0; sh < 16; sh++) {
+            uint32_t r = hue_rgb[hu][0] * (uint32_t)(sh + 1) / 16u, g = hue_rgb[hu][1] * (uint32_t)(sh + 1) / 16u,
+                     b = hue_rgb[hu][2] * (uint32_t)(sh + 1) / 16u;
+            g_pv_pal[hu * 16 + sh] = 0xff000000u | (r << 16) | (g << 8) | b;
+        }
+    free(g_pv_idx);
+    g_pv_idx = (uint8_t *)malloc((size_t)w * (size_t)h);
+    g_pv_w = g_pv_idx ? w : 0; g_pv_h = h;
+    if (!g_pv_idx) return;
+    const float cx = (float)w * 0.5f, cy = (float)h * 0.5f, k = (float)h;
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            float dx = ((float)x + 0.5f - cx) / k, dy = ((float)y + 0.5f - cy) / k;
+            float tf = dy > 0.001f ? 1.0f / dy : 1e9f, tc = dy < -0.001f ? 1.0f / -dy : 1e9f;
+            float tw = (dx > 0.001f || dx < -0.001f) ? 1.2f / (dx < 0 ? -dx : dx) : 1e9f;
+            float t = tf < tc ? tf : tc; int kind = tf < tc ? 0 : 1;          /* 0 floor, 1 ceiling */
+            if (tw < t) { t = tw; kind = 2; }                                  /* side wall */
+            int hue, u, v;
+            if (t > 7.0f) {                                                    /* back wall with a doorway */
+                kind = 3; t = 7.0f;
+                u = (int)((dx * t + 4.f) * 8.f); v = (int)((dy * t + 4.f) * 8.f);
+            } else if (kind == 2) { u = (int)(t * 8.f); v = (int)((dy * t + 4.f) * 8.f); }
+            else { u = (int)((dx * t + 4.f) * 8.f); v = (int)(t * 8.f); }
+            uint32_t n = pv_hash(u, v);
+            hue = kind == 0 ? 2 : kind == 1 ? 0 : 1;
+            int shade = 15 - (int)(t * 1.9f); if (shade < 1) shade = 1;
+            int brick = ((v & 7) == 0) || (((u + ((v >> 3) & 1) * 4) & 7) == 0);   /* mortar lines */
+            if (brick) shade = shade * 2 / 3; else shade += (int)(n & 3) - 1;
+            if (kind == 3) {                                                   /* doorway, gold frame, red sigil */
+                float ax = dx * t, ay = dy * t;
+                if (ax > -0.9f && ax < 0.9f && ay > -0.5f && ay < 1.0f) { hue = 0; shade = 1 + (int)(n & 1); }
+                else if (ax > -1.15f && ax < 1.15f && ay > -0.75f && ay < 1.0f) { hue = 3; shade = 9 + (int)(n & 3); }
+                if ((ax - ay > 1.6f && ax - ay < 1.75f) || (ax + ay > 1.8f && ax + ay < 1.85f)) { hue = 7; shade = 15; }   /* thin diagonals */
+            }
+            float tx = (float)x - cx * 0.55f, ty = (float)y - cy * 0.75f;      /* torch: hard-edged disc + core */
+            float r2 = tx * tx + ty * ty, R = (float)h * 0.07f;
+            if (r2 < R * R) { hue = r2 < R * R * 0.3f ? 7 : 3; shade = 15; }
+            if (shade > 15) shade = 15;
+            if (shade < 0) shade = 0;
+            g_pv_idx[(size_t)y * w + x] = (uint8_t)(hue * 16 + shade);
+        }
+    for (int y = h - h / 8; y < h; y++)                                        /* colour ramp strip along the bottom */
+        for (int x = 0; x < w; x++)
+            g_pv_idx[(size_t)y * w + x] = (uint8_t)(((x * 6 / w) % 6 + 1) * 16 + 4 + (x * 6 % w) * 11 / w);
+}
+
 static uint32_t g_scale2x_buf[(size_t)ROTH_FB_MAXW * 2 * ROTH_FB_MAXH * 2];
 
 int sdl_present_run(int scale, int filter)
@@ -310,6 +396,8 @@ int sdl_present_run(int scale, int filter)
     SDL_SetRenderLogicalPresentation(ren, cur_log_w, cur_log_h,
                                      cur_integer ? SDL_LOGICAL_PRESENTATION_INTEGER_SCALE : SDL_LOGICAL_PRESENTATION_LETTERBOX);
     int cur_k = 1;   /* texture size multiple vs the published frame (2 for scale2x) */
+    int cur_wmode = (filter >> 30) & 3;
+    if (cur_wmode) apply_window_mode(win, cur_wmode);
 
     g_shm->viewer_alive = 1;
 
@@ -434,6 +522,8 @@ int sdl_present_run(int scale, int filter)
             SDL_SetTextureScaleMode(tex, scale_mode);
             cur_tex_w = w; cur_tex_h = h;
         }
+        int want_wmode = (int)((fm >> 30) & 3u);
+        if (want_wmode != cur_wmode) { cur_wmode = want_wmode; apply_window_mode(win, cur_wmode); }
         if (aw != cur_log_w || ah != cur_log_h || want_integer != cur_integer) {
             SDL_SetRenderLogicalPresentation(ren, aw, ah,
                 want_integer ? SDL_LOGICAL_PRESENTATION_INTEGER_SCALE : SDL_LOGICAL_PRESENTATION_LETTERBOX);
@@ -475,6 +565,19 @@ int sdl_present_run(int scale, int filter)
             }
         }
 
+        if (g_shm->pre_w > 0 && g_shm->pre_h > 0) {      /* display-options preview scene (set_display_preview) */
+            int px0 = (int)g_shm->pre_x, py0 = (int)g_shm->pre_y, pw = (int)g_shm->pre_w, ph = (int)g_shm->pre_h;
+            if (px0 >= 0 && py0 >= 0 && pw <= w && ph <= h && px0 + pw <= w && py0 + ph <= h) {
+                if (!g_pv_idx || g_pv_w != pw || g_pv_h != ph) pv_build(pw, ph);
+                static uint32_t pv_rgb[ROTH_FB_MAX];
+                if (g_pv_idx && (size_t)pw * ph <= ROTH_FB_MAX) {
+                    for (int i = 0; i < pw * ph; i++) pv_rgb[i] = g_pv_pal[g_pv_idx[i]];
+                    if (fm & 2u) aa_pass(pv_rgb, g_pv_idx, g_pv_pal, pw, ph, 0, 0, pw, ph, 0, 0, 0, 0, edge_now);
+                    for (int y = 0; y < ph; y++)
+                        memcpy(rgb + (size_t)(py0 + y) * w + px0, pv_rgb + (size_t)y * pw, (size_t)pw * 4);
+                }
+            }
+        }
         if (cur_k == 2) {
             scale2x_pass(g_scale2x_buf, rgb, w, h);
             SDL_UpdateTexture(tex, NULL, g_scale2x_buf, w * 2 * 4);

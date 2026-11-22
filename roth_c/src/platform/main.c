@@ -100,7 +100,7 @@ static int g_headless  = 0;    /* --headless / ROTH_HEADLESS=1: no window, shm p
 static int g_sdl_flag  = 0;    /* --sdl / --windowed / ROTH_SDL=1: explicit window (both-mode w/ --headless) */
 static int g_want_shm  = 0;    /* ROTH_SHM=1: publish /dev/shm/roth_fb even under a window */
 static int g_sdl_scale = 0;    /* --scale N / ROTH_SCALE: initial window scale (0 = auto-fit) */
-static int g_sdl_filter = 0;   /* flag word: bit0 linear (legacy), bit1 --aa / ROTH_AA (edge anti-aliasing), bits 16-19 scaler, bit 20 integer scale, bits 24-27 scanlines, bits 28-29 CRT look */
+static int g_sdl_filter = 0;   /* flag word: bit0 linear (legacy), bit1 --aa / ROTH_AA (edge anti-aliasing), bits 16-19 scaler, bit 20 integer scale, bits 24-27 scanlines, bits 28-29 CRT look, bits 30-31 window mode */
 
 /* --filter / ROTH_FILTER name -> scaler id in bits 16-19 (and the legacy linear bit 0) */
 static void set_filter_name(const char *n)
@@ -119,6 +119,12 @@ static void set_crt(int n)
 {
     g_sdl_filter &= ~(0x3 << 28);
     g_sdl_filter |= (n < 0 ? 0 : n > 2 ? 2 : n) << 28;
+}
+static void set_window_mode(const char *n)
+{
+    int m = !strcmp(n, "windowed") ? 0 : (!strcmp(n, "borderless") || !strcmp(n, "fullscreen-window")) ? 1 : !strcmp(n, "fullscreen") ? 2 : -1;
+    if (m < 0) { fprintf(stderr, "[main] unknown window mode '%s' (windowed|borderless|fullscreen): using windowed\n", n); m = 0; }
+    g_sdl_filter = (int)(((unsigned)g_sdl_filter & 0x3fffffffu) | ((unsigned)m << 30));
 }
 static void set_scanlines(int n)
 {
@@ -504,6 +510,10 @@ int main(int argc, char **argv)
             g_sdl_scale = atoi(argv[++i]);
         } else if (!strcmp(argv[i], "--filter") && i + 1 < argc) {
             set_filter_name(argv[++i]);
+        } else if (!strcmp(argv[i], "--window-mode") && i + 1 < argc) {
+            set_window_mode(argv[++i]);
+        } else if (!strcmp(argv[i], "--fullscreen")) {
+            set_window_mode("borderless");
         } else if (!strcmp(argv[i], "--crt") && i + 1 < argc) {
             set_crt(atoi(argv[++i]));
         } else if (!strcmp(argv[i], "--integer-scale")) {
@@ -550,6 +560,7 @@ int main(int argc, char **argv)
     if (getenv("ROTH_INTEGER_SCALE")) g_sdl_filter |= 1 << 20;
     if (getenv("ROTH_SCANLINES")) set_scanlines(atoi(getenv("ROTH_SCANLINES")));
     if (getenv("ROTH_CRT")) set_crt(atoi(getenv("ROTH_CRT")));
+    if (getenv("ROTH_WINDOW_MODE")) set_window_mode(getenv("ROTH_WINDOW_MODE"));
     if (getenv("ROTH_AA")) g_sdl_filter |= 2;
 #endif
 
@@ -651,6 +662,12 @@ int main(int argc, char **argv)
      * thread exits (host_alive -> 0). On window close it sets g_shm->quit, which the game thread's
      * shm_tick honors with _exit(0). */
     if (g_shm) g_shm->filter_mode = (uint32_t)g_sdl_filter;   /* seed; a plugin may change it live afterward */
+    if (getenv("ROTH_PREVIEW_TEST") && g_shm) {   /* dev: x,y,w,h of a display-options preview rectangle */
+        unsigned px, py, pw, ph;
+        if (sscanf(getenv("ROTH_PREVIEW_TEST"), "%u,%u,%u,%u", &px, &py, &pw, &ph) == 4) {
+            g_shm->pre_x = px; g_shm->pre_y = py; g_shm->pre_w = pw; g_shm->pre_h = ph;
+        }
+    }
     sdl_present_run(g_sdl_scale, g_sdl_filter);
 
     if (g_shm) {

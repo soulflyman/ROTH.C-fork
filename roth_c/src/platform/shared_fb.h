@@ -69,13 +69,17 @@ struct roth_shm {
     volatile uint32_t filter_mode;
 
     /* filter_mode is a flag word: bit 0 = linear upscale filter, bit 1 = edge anti-aliasing of the 3D view
-     * (sdl_host.c), bits 8-15 = AA edge contrast threshold (0 = default 24 / ROTH_AA_EDGE), bits 16-19 = upscaler id (0 nearest, 1 linear, 2 sharp-bilinear, 3 scale2x), bit 20 = integer scaling, bits 24-27 = scanline strength 0-8, bits 28-29 = CRT look 0-2. The AA pass needs to know WHERE the 3D scene is and which pixels a plugin drew over it:
+     * (sdl_host.c), bits 8-15 = AA edge contrast threshold (0 = default 24 / ROTH_AA_EDGE), bits 16-19 = upscaler id (0 nearest, 1 linear, 2 sharp-bilinear, 3 scale2x), bit 20 = integer scaling, bits 24-27 = scanline strength 0-8, bits 28-29 = CRT look 0-2, bits 30-31 = window mode (0 windowed, 1 fullscreen window, 2 fullscreen). The AA pass needs to know WHERE the 3D scene is and which pixels a plugin drew over it:
      *   view_*: the 3D view rectangle in published-frame pixels, published by traps.c only during normal
      *           gameplay (all 0 otherwise: menus, cutscenes, title screens are never smoothed);
      *   ovl_*:  bounding box of the pixels the plugins' compose seam changed this tick (empty when x1 <= x0),
      *           maintained by plugin_loader.c only while AA is on — overlays/text stay crisp. */
     volatile uint32_t view_x, view_y, view_w, view_h;
     volatile uint32_t ovl_x0, ovl_y0, ovl_x1, ovl_y1;
+
+    /* Live display-options preview (roth_api_v1->set_display_preview): the presenter draws a built-in test scene into this
+     * rectangle of the published frame, rendered with the current display options. pre_w == 0 = off. */
+    volatile uint32_t pre_x, pre_y, pre_w, pre_h;
 };
 
 #endif
